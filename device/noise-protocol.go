@@ -695,6 +695,7 @@ func (peer *Peer) BeginSymmetricSession() error {
 		device.DeleteKeypair(previous)
 	}
 
+	device.handshakesCompleted.Add(1)
 	return nil
 }
 

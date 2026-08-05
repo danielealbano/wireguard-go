@@ -218,7 +218,7 @@ func (device *Device) RoutineReadFromTUN() {
 		elems       = make([]*QueueOutboundElement, batchSize)
 		bufs        = make([][]byte, batchSize)
 		elemsByPeer = make(map[*Peer]*QueueOutboundElementsContainer, batchSize)
-		count       = 0
+		count       int
 		sizes       = make([]int, batchSize)
 		offset      = MessageTransportHeaderSize
 	)

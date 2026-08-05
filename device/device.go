@@ -63,6 +63,11 @@ type Device struct {
 		limiter        ratelimiter.Ratelimiter
 	}
 
+	// Handshake counters (metrics only; no behavior/wire change).
+	handshakesCompleted  atomic.Uint64
+	handshakesFailed     atomic.Uint64
+	handshakeRateLimited atomic.Uint64
+
 	allowedips    AllowedIPs
 	indexTable    IndexTable
 	cookieChecker CookieChecker

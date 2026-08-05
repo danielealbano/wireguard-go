@@ -49,13 +49,28 @@ func main() {
 		os.Exit(ExitSetupFailed)
 	}
 
-	device := device.NewDevice(tun, conn.NewDefaultBind(), logger)
+	transport := os.Getenv("WG_TRANSPORT")
+	wsOpts, err := buildWSOptionsFromEnv(logger)
+	if err != nil {
+		logger.Errorf("Invalid websocket configuration: %v", err)
+		os.Exit(ExitSetupFailed)
+	}
+	bind, err := conn.NewBindForTransport(transport, wsOpts...)
+	if err != nil {
+		logger.Errorf("Invalid WG_TRANSPORT: %v", err)
+		os.Exit(ExitSetupFailed)
+	}
+
+	device := device.NewDevice(tun, bind, logger)
 	err = device.Up()
 	if err != nil {
 		logger.Errorf("Failed to bring up device: %v", err)
 		os.Exit(ExitSetupFailed)
 	}
 	logger.Verbosef("Device started")
+
+	metricsCancel := startMetrics(logger, device, bind)
+	defer metricsCancel()
 
 	uapi, err := ipc.UAPIListen(interfaceName)
 	if err != nil {

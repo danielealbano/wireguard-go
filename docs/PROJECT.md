@@ -40,9 +40,12 @@ dependencies). Re-verify against `proxy.golang.org` before bumping.
 | Concern | Choice | Notes |
 |---|---|---|
 | Language | **Go** `1.26.5` (go.mod directive) | Latest stable toolchain is used to build/test. |
-| Crypto | `golang.org/x/crypto` `v0.37.0` | Curve25519, ChaCha20-Poly1305, BLAKE2s, Poly1305. |
-| Networking | `golang.org/x/net` `v0.39.0` | IPv4/IPv6 header helpers, DNS message parsing. |
-| Syscalls | `golang.org/x/sys` `v0.32.0` | Per-OS socket/TUN/route control (unix, windows). |
+| Crypto | `golang.org/x/crypto` `v0.54.0` | Curve25519, ChaCha20-Poly1305, BLAKE2s, Poly1305. |
+| Networking | `golang.org/x/net` `v0.57.0` | IPv4/IPv6 header helpers, DNS message parsing. |
+| Syscalls | `golang.org/x/sys` `v0.47.0` | Per-OS socket/TUN/route control (unix, windows). |
+| WebSocket | `github.com/gobwas/ws` `v1.4.0` | WebSocket transport (client + server) over `net/http`. Frame-level masking control (unmasked-by-default client, opt-in `ws_mask`, accept-both server) for wstunnel interop. |
+| JWT / UUID | `github.com/golang-jwt/jwt/v5` `v5.3.1`, `github.com/google/uuid` `v1.6.0` | wstunnel interop handshake (HS256 JWT + UUIDv4). |
+| Metrics | `github.com/prometheus/client_golang` `v1.24.1` | Optional Prometheus `/metrics` listener (off by default). |
 | Userspace stack | `gvisor.dev/gvisor` (pinned) | `tun/netstack` in-process TCP/IP stack. |
 | Windows TUN | `golang.zx2c4.com/wintun` (pinned) | Wintun driver bindings. |
 | Transitive (indirect) | `golang.org/x/time`, `github.com/google/btree` | `// indirect` in `go.mod`; pulled in transitively (e.g. via gVisor), not imported directly. The `ratelimiter` package uses stdlib `time` and a hand-rolled token bucket. |
@@ -73,7 +76,7 @@ the TUN device, UDP sockets, and the local UAPI control socket.
 | `replay/` | Anti-replay sliding-window filter (RFC 6479). |
 | `tai64n/` | TAI64N timestamp encoding for handshake initiation (anti-replay of handshakes). |
 | `rwcancel/` | Cancelable read/write on a file descriptor (used to interrupt blocking route/socket reads on shutdown). |
-| `tests/netns.sh` | Linux network-namespace end-to-end tunnel test (two peers over loopback). |
+| `tests/e2e/` | Linux network-namespace end-to-end tests (`//go:build linux && e2e`): the real daemon over netns for UDP, WebSocket (wss), and wstunnel (real wstunnel binary). |
 
 ---
 
@@ -102,6 +105,15 @@ users the in-kernel WireGuard is preferable.
 | `WG_UAPI_FD` | Use an already-open UAPI socket file descriptor. |
 | `WG_PROCESS_FOREGROUND` | Set to `1` by the daemonizing parent for its child; forces foreground. |
 | `WG_TUN_NAME_FILE` | On macOS/OpenBSD (kernel-chosen `utun`/`tun` names), the resolved interface name is written here. |
+| `WG_TRANSPORT` | `udp` (default) or `ws` — selects the outer transport (UDP or WebSocket) at startup. |
+| `WG_WS_ROLE` | `client` (default) or `server` — the WebSocket bind role. |
+| `WG_WS_TLS_CERT` / `WG_WS_TLS_KEY` | Server `wss` certificate + key files. |
+| `WG_WS_TLS_CA` / `WG_WS_TLS_SERVERNAME` / `WG_WS_TLS_INSECURE` | Client `wss` options (empty ⇒ system roots; `WG_WS_TLS_INSECURE=1` skips verification). |
+| `WG_WS_BEARER` | Server-side expected pre-shared bearer (coarse gate, constant-time checked before upgrade). Never logged. |
+| `WG_WS_PING_INTERVAL` | WebSocket ping/backstop interval (Go duration; sane default). |
+| `WG_WS_MASK` | `1`/`true` masks client WebSocket frames (default off, unmasked — matches a default wstunnel server). When on, the peer wstunnel server MUST run `--websocket-mask-frame` (mask modes must match). |
+| `WG_WS_TRUSTED_PROXIES` | Comma-separated CIDRs from which `X-Forwarded-For` is trusted (server behind an HTTP reverse proxy). |
+| `WG_METRICS_LISTEN` | Prometheus `/metrics` listen address. Empty ⇒ metrics OFF. |
 
 ### UAPI configuration protocol
 
@@ -110,6 +122,11 @@ the [cross-platform configuration protocol](https://www.wireguard.com/xplatform/
 Keys include the interface `private_key`, `listen_port`, `fwmark`, and per-peer `public_key`,
 `endpoint`, `allowed_ip`, `persistent_keepalive_interval`, `preshared_key`, plus `remove`/`replace`
 directives. `wg(8)` is the normal front-end.
+
+The WebSocket transport adds these **additive** UAPI keys (accepted only when `WG_TRANSPORT=ws`):
+the device key `ws_listen` (server listen URL) and the per-peer keys `ws_mode` (`standard`|`wstunnel`),
+`ws_target` (real WireGuard `host:port` for `wstunnel` mode), and `ws_bearer` (write-only client bearer,
+never echoed by `get=1` or logged). Peer `endpoint` values may be `ws(s)://host:port/path` URLs.
 
 ### Control socket / named pipe
 
@@ -162,8 +179,12 @@ Direct commands used for the quality gates (see `go.md` §4):
   - `conn/bindtest` — channel-backed `Bind` for two in-process devices.
   - `tun/tuntest` — in-memory TUN device.
   - `tun/netstack` — full userspace TCP/IP for loopback end-to-end checks.
-- `tests/netns.sh` runs a **two-peer end-to-end tunnel** across Linux network namespaces
-  (Linux + privileges required).
+- In-process integration tunnels run on **every platform**: a real-loopback-UDP two-device tunnel and a
+  **fake wstunnel relay** driving the WebSocket client in wstunnel mode (reproducing the masking/prefix
+  interop contracts).
+- `tests/e2e/` runs **real-daemon end-to-end tunnels** across Linux network namespaces (`//go:build linux
+  && e2e`; Linux + root) for UDP, WebSocket (self-signed wss), and wstunnel (the real wstunnel binary via
+  `WSTUNNEL_BIN`); the daemon under test is `WG_GO_BIN`. Run with `make test-e2e`.
 - **Testcontainers are not used** — there is no external service infrastructure. This is the
   documented exception to the testcontainers rule in `go.md`.
 - The race detector (`-race`) is mandatory.
@@ -172,15 +193,17 @@ Direct commands used for the quality gates (see `go.md` §4):
 
 ## Roadmap
 
-Planned extensions to this fork (each proceeds through the development pipeline; nothing here is
-implemented yet unless a plan under `docs/plans/` says so):
+Delivered in this fork (plan `docs/plans/1_websocket_transport_*.md`):
 
-1. **WebSocket transport** — a `conn.Bind`-level transport that tunnels the WireGuard wire protocol
-   over WebSocket, in both **server** and **client** modes, to traverse WebSocket-only network paths.
-2. **First-class macOS support** for the extended build.
-3. **Android support** such that this backend can replace the Go backend inside the official
-   WireGuard Android app.
-4. **CI, release, and packaging**: GitHub Actions quality gates, **goreleaser** `v2.17.1` for
-   multi-platform binaries (including macOS and Android artifacts), and a container image.
+1. **WebSocket transport** — a `conn.Bind`-level transport tunnelling the WireGuard wire protocol over
+   `ws(s)://` in both **server** and **client** modes, with `standard` and `wstunnel` dialects,
+   reconnect + OS-path-monitor roaming, egress pinning, an optional bearer gate, trusted-proxy `XFF`,
+   and an optional Prometheus metrics listener.
+2. **macOS/Android support** — the client bind builds for the mobile targets; a per-dial
+   `VpnService.protect` callback and the exported `BindUpdate` bump are the only cross-language
+   contracts (the app/libwg-go layers are external; see `docs/ANDROID_INTEGRATION.md`).
+3. **CI, release, and packaging** — GitHub Actions quality gates, **goreleaser** `v2.17.1`
+   multi-platform binaries, and a multi-arch container image published to
+   `ghcr.io/danielealbano/wireguard-go`.
 
 See `docs/ARCHITECTURE.md` for how these map onto the existing `conn`/`tun`/`device` boundaries.

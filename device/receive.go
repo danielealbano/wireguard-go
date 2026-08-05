@@ -334,6 +334,7 @@ func (device *Device) RoutineHandshake(id int) {
 				// check ratelimiter
 
 				if !device.rate.limiter.Allow(elem.endpoint.DstIP()) {
+					device.handshakeRateLimited.Add(1)
 					goto skip
 				}
 			}
@@ -361,6 +362,7 @@ func (device *Device) RoutineHandshake(id int) {
 
 			peer := device.ConsumeMessageInitiation(&msg)
 			if peer == nil {
+				device.handshakesFailed.Add(1)
 				device.log.Verbosef("Received invalid initiation message from %s", elem.endpoint.DstToString())
 				goto skip
 			}
@@ -393,6 +395,7 @@ func (device *Device) RoutineHandshake(id int) {
 
 			peer := device.ConsumeMessageResponse(&msg)
 			if peer == nil {
+				device.handshakesFailed.Add(1)
 				device.log.Verbosef("Received invalid response message from %s", elem.endpoint.DstToString())
 				goto skip
 			}

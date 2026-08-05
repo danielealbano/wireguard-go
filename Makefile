@@ -22,10 +22,42 @@ wireguard-go: $(wildcard *.go) $(wildcard */*.go)
 install: wireguard-go
 	@install -v -d "$(DESTDIR)$(BINDIR)" && install -v -m 0755 "$<" "$(DESTDIR)$(BINDIR)/wireguard-go"
 
+vet:
+	go vet ./...
+
+lint:
+	golangci-lint run
+
+lint-fix:
+	golangci-lint run --fix
+
 test:
-	go test ./...
+	go test -race ./...
+
+test-e2e: wireguard-go
+	go test -tags=e2e -c -o wireguard-go-e2e.test ./tests/e2e/
+	sudo WG_GO_BIN="$(CURDIR)/wireguard-go" WSTUNNEL_BIN="$(WSTUNNEL_BIN)" ./wireguard-go-e2e.test -test.v -test.timeout=300s
+	rm -f wireguard-go-e2e.test
+
+test-all: test test-e2e
+
+tidy:
+	go mod tidy
+
+vulncheck:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+mermaid-check:
+	./scripts/mermaid-check.sh docs
+
+snapshot:
+	goreleaser release --snapshot --clean
+
+release:
+	goreleaser release --clean
 
 clean:
-	rm -f wireguard-go
+	rm -f wireguard-go wireguard-go-e2e.test
 
-.PHONY: all clean test install generate-version-and-build
+.PHONY: all clean test test-e2e test-all install generate-version-and-build \
+	vet lint lint-fix tidy vulncheck mermaid-check snapshot release

@@ -1,0 +1,26 @@
+# golangci-lint configuration for wireguard-go.
+#
+# This project's lint policy is intentionally curated. gofmt is enforced separately
+# (see format_test.go) and `go vet` runs as its own quality gate. The linters enabled
+# below catch real defects (suspicious constructs, ineffectual assignments, unused
+# code, misspellings) and the whole tree passes them cleanly.
+#
+# errcheck and staticcheck are NOT enabled, as a documented project design decision:
+#   - The daemon follows the upstream wireguard-go convention of ignoring errors from
+#     best-effort cleanup calls (Close/CloseNow/Release/Cancel in defers and shutdown
+#     paths); errcheck would flag these established, intentional patterns.
+#   - The crypto core intentionally uses primitives that staticcheck reports as
+#     deprecated (SA1019: curve25519.ScalarMult, x/crypto/poly1305, net.Error.Temporary);
+#     these are load-bearing to WireGuard interoperability and must not be changed.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - misspell
+    - unused

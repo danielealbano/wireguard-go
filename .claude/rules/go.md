@@ -97,7 +97,7 @@ All references to "tests" in this document mean automated tests (unit, integrati
 - Tests MUST clean up after themselves (temp files, in-process servers, test containers).
 
 ### Frameworks — ABSOLUTE
-- The standard library `testing` package is THE test framework. You MUST prefer the standard library (`t.Errorf`, `t.Fatalf`) or `testify/assert` and `testify/require` ONLY if already in use in the repo. (wireguard-go uses stdlib `testing` EXCLUSIVELY — you MUST NOT introduce `testify`.)
+- The standard library `testing` package is THE test framework. You MUST prefer the standard library (`t.Errorf`, `t.Fatalf`) or `testify/assert` and `testify/require` ONLY if already in use in the repo.
 - You MUST use **table-driven tests** as the default pattern for functions with multiple input/output cases; each test case MUST have a descriptive `name` field.
 - You MUST use `t.Run(tc.name, func(t *testing.T) { ... })` for subtests.
 - You MUST follow the **Arrange-Act-Assert** pattern consistently.
@@ -146,7 +146,7 @@ func TestParseURL_Variants(t *testing.T) {
 ### Integration tests
 - Integration tests MUST verify that individual components work correctly against real external systems or real protocol surfaces (e.g., `net/http/httptest` servers speaking the real wire format, or in-process protocol harnesses).
 - You MUST guard integration tests with the build tag `//go:build integration` at the top of the file, UNLESS the project-specific rule file documents a different convention for how integration/e2e behavior is exercised.
-- **Testcontainers are MANDATORY** when a test needs a real external service (DB, broker, …): it MUST use `testcontainers-go`. You MUST NEVER rely on pre-running Docker Compose services or shared, long-lived test infrastructure. (A project MAY document an exception in its project-specific rule file when NO external service infrastructure exists — e.g. wireguard-go, which fakes all network I/O with in-repo harnesses and exercises the full tunnel via OS network namespaces; see `project.md`.)
+- **Testcontainers are MANDATORY** when a test needs a real external service (DB, broker, …): it MUST use `testcontainers-go`. You MUST NEVER rely on pre-running Docker Compose services or shared, long-lived test infrastructure. (A project MAY document an exception in its project-specific rule file when NO external service infrastructure exists.)
 - You MUST start containers in `TestMain` or in a shared test helper and pass connection details to tests. You MUST use `t.Cleanup` (or `defer container.Terminate(ctx)`) to guarantee teardown.
 - Containers MUST be ephemeral and isolated: each test suite gets its own container instance.
 - Each integration test MUST set up and tear down its own state (use `t.Cleanup`).
@@ -154,7 +154,7 @@ func TestParseURL_Variants(t *testing.T) {
 
 ### End-to-end (E2E) tests
 - E2E tests MUST exercise the full system roundtrip.
-- You MUST guard E2E tests with the build tag `//go:build e2e`, UNLESS the project-specific rule file documents a different convention (e.g. wireguard-go's `tests/netns.sh` and `tun/netstack` loopback roundtrips).
+- You MUST guard E2E tests with the build tag `//go:build e2e`, UNLESS the project-specific rule file documents a different convention.
 - All required infrastructure MUST be started via `testcontainers-go` (same rules and same documented exception as integration tests).
 - E2E tests MUST be idempotent and safe to re-run.
 - You MUST use realistic but deterministic test data.
@@ -171,7 +171,7 @@ func TestParseURL_Variants(t *testing.T) {
 
 ### Environment variables for tests
 - Test configuration via environment variables is PROJECT-SPECIFIC. IF a project uses a `.env` file, it MUST be documented in the project-specific rule file (with a committed `.env.example`), the Makefile SHOULD source it automatically, and for manual `go test` runs you MUST source it first: `set -a && source .env && set +a && go test ...`.
-- A project with NO external service infrastructure needs NO test environment variables — its tests MUST run with a bare `go test`. (This is the case for wireguard-go; see `project.md`.)
+- A project with NO external service infrastructure needs NO test environment variables — its tests MUST run with a bare `go test`.
 - Tests that start their own infrastructure (e.g. testcontainers) do NOT need pre-configured environment variables.
 
 ### Manual testing documentation

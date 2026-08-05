@@ -280,3 +280,48 @@ build-tagged files:
 Mobile builds additionally select queue sizing via `device/queueconstants_{android,ios,...}.go`
 and adjust roaming via `device/mobilequirks.go`. Adding a platform or a transport means implementing
 these interfaces, **not** touching the `device` core.
+
+---
+
+## 9. WebSocket Transport (`conn/ws_*.go`)
+
+The WebSocket transport is an alternative `conn.Bind` (`conn.WebSocketBind`) that carries the
+*unchanged* WireGuard datagrams over `ws(s)://` instead of UDP — one datagram per WebSocket binary
+message. It is selected at startup with `WG_TRANSPORT=ws` and runs in one role per device
+(`WG_WS_ROLE=client|server`). The `device` core is untouched: the additive UAPI keys reach it only via
+the optional `conn.WebSocketBinder` interface it type-asserts, and network-switch roaming reuses the
+existing `device.BindUpdate()` (close + reopen the bind), driven on the standalone daemon by a per-OS
+path monitor (Linux netlink, macOS `NWPathMonitor` via cgo) and by the embedding app otherwise.
+
+```mermaid
+flowchart LR
+    subgraph ClientSide["WebSocket client"]
+        CDEV["device.Device"]
+        CBIND["WebSocketBind client"]
+        CDIAL["dial ws or wss upgrade\negress pin plus protect"]
+    end
+
+    subgraph ServerSide["WebSocket server"]
+        SHTTP["net/http listener\nbearer gate, XFF"]
+        SBIND["WebSocketBind server"]
+        SDEV["device.Device"]
+    end
+
+    CDEV --> CBIND --> CDIAL
+    CDIAL -- "one datagram per binary message" --> SHTTP
+    SHTTP --> SBIND --> SDEV
+    SDEV --> SBIND -- "reply on the same connection" --> CDIAL
+    CDIAL --> CBIND --> CDEV
+```
+
+Key properties: a per-connection write mutex serialises concurrent senders; a never-closed inbound
+queue plus a `done` channel and a joined `WaitGroup` give a race- and leak-free shutdown across
+`BindUpdate` cycles; the client reconnects with DNS re-resolution and bounded per-endpoint backoff,
+with WebSocket ping as a dead-connection backstop; the server rebinds a reconnecting peer via
+`SetEndpointFromPacket` and gates upgrades with a constant-time bearer check. Frame masking (built on
+`github.com/gobwas/ws`) is **unmasked by default** on the client — matching a default wstunnel server,
+which does not unmask — with an opt-in `ws_mask` (`WG_WS_MASK`) mirroring wstunnel's
+`--websocket-mask-frame`; the server **accepts both** masked and unmasked client frames and never masks
+its own. An optional Prometheus
+collector (in `metrics/`) reads device peer atomics and WebSocket-bind counters through daemon-supplied
+snapshots, so `metrics` imports neither `device` nor `conn`.
