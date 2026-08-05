@@ -159,8 +159,9 @@ func (l *lab) ping(ns, target string) bool {
 }
 
 // startWstunnel runs the real wstunnel server binary in ns (plain ws), restricted to
-// the wg UDP endpoint. wstunnel is REQUIRED: a missing binary is a setup failure.
-func (l *lab) startWstunnel(ns, listenURL, restrictTo string) {
+// the wg UDP endpoint. extraArgs are inserted before the listen URL (e.g.
+// --websocket-mask-frame). wstunnel is REQUIRED: a missing binary is a setup failure.
+func (l *lab) startWstunnel(ns, listenURL, restrictTo string, extraArgs ...string) {
 	l.t.Helper()
 	bin := os.Getenv("WSTUNNEL_BIN")
 	if bin == "" {
@@ -168,7 +169,9 @@ func (l *lab) startWstunnel(ns, listenURL, restrictTo string) {
 		// a missing binary is a setup failure, never a reason to skip and hide the gap.
 		l.t.Fatal("WSTUNNEL_BIN not set (the wstunnel e2e requires the real wstunnel binary)")
 	}
-	cmd := exec.Command("ip", "netns", "exec", ns, bin, "server", "--restrict-to", restrictTo, listenURL)
+	args := append([]string{"netns", "exec", ns, bin, "server", "--restrict-to", restrictTo}, extraArgs...)
+	args = append(args, listenURL)
+	cmd := exec.Command("ip", args...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Start(); err != nil {
 		l.t.Fatalf("start wstunnel: %v", err)
