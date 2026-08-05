@@ -3464,6 +3464,17 @@ real-wstunnel interop.
     references, so the literal grep is not empty over the docs. The enforced gate is: **zero
     `coder/websocket` in any `.go` file** (verified) and no doc presenting coder/`Conn.Ping` as the
     CURRENT mechanism (verified — every remaining mention is explicit switch rationale).
+  - **US12 manual QA (12.8.5) — wstunnel default path prefix `v1` (bugfix).** The real-server QA against
+    `wss://vpn.home.danielealbano.me:8443` initially failed with HTTP 400 "Invalid request" at the
+    upgrade. Diagnosis (captured the stock wstunnel v10.6.2 client's raw request AND verified
+    `wstunnel/src/config.rs:9 DEFAULT_CLIENT_UPGRADE_PATH_PREFIX = "v1"`): the stock client targets
+    `/v1/events`, but `wsUpgradeRequest` derived the prefix solely from the endpoint URL path, so a
+    pathless endpoint (`wss://host:8443`) produced `//events`, which the server's front-end rejects.
+    Fixed in `ws_dialect.go`: when the endpoint URL carries no path, the wstunnel prefix defaults to
+    `v1` (new const `wstunnelDefaultPathPrefix`) → `/v1/events`; an explicit URL path is still honoured
+    as a custom prefix. After the fix, the real-server QA **passes**: handshake completes and
+    `192.168.178.1` replies to a ping through the gobwas WS tunnel (unmasked default) in ~7 ms. Covered
+    by `TestWSUpgrade_WstunnelDefaultPrefix`.
 - **Implementation: final code written directly (no stub/replace sequence).** The plan sequenced US1
   with compiling `Open`/`Close`/`Send` stubs in `ws_bind.go` that US2/US6 would replace. Since the
   implementation builds once at the end (quality gates), the final files were written directly: the
