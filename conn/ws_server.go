@@ -58,11 +58,15 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 		return nil, 0, err
 	}
 	go func() {
+		var serveErr error
 		if b.cfg.tlsServer != nil {
 			b.srv.TLSConfig = b.cfg.tlsServer
-			_ = b.srv.ServeTLS(ln, "", "") // certs come from tlsServer
+			serveErr = b.srv.ServeTLS(ln, "", "") // certs come from tlsServer
 		} else {
-			_ = b.srv.Serve(ln)
+			serveErr = b.srv.Serve(ln)
+		}
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			b.cfg.logger.errorf("websocket server on %s stopped: %v", b.cfg.listenURL, serveErr)
 		}
 	}()
 	return []ReceiveFunc{makeWSReceiveFunc(inbound, done)}, port, nil

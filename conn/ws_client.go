@@ -97,6 +97,7 @@ func (b *WebSocketBind) readLoop(c *wsClientConn, inbound chan<- wsInbound, done
 		typ, data, err := c.conn.Read(c.ctx)
 		if err != nil {
 			if !b.isClosed() {
+				b.cfg.logger.verbosef("websocket read on %s ended, will reconnect: %v", c.ep.DstToString(), err)
 				b.metrics.incReconnect(c.ep.DstToString())
 			}
 			return
