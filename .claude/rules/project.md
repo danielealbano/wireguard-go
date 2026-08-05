@@ -122,7 +122,7 @@ The `Makefile` is the authoritative command surface:
 - `make vet` — `go vet ./...`.
 - `make lint` / `make lint-fix` — `golangci-lint run` / `golangci-lint run --fix`.
 - `make test` — unit tests with the race detector (`go test -race ./...`).
-- `make test-e2e` — full two-peer tunnel via `tests/netns.sh` (Linux + privileges).
+- `make test-e2e` — Go network-namespace e2e (`tests/e2e/`, Linux + root) for UDP/WS/wstunnel; needs `WSTUNNEL_BIN` (real wstunnel binary).
 - `make test-all` — unit + e2e.
 - `make tidy` — `go mod tidy`.
 - `make vulncheck` — `govulncheck ./...`.
@@ -144,8 +144,10 @@ any work is considered DONE (per `development_pipeline.md` §2 and `go.md` §4).
   - `conn/bindtest` — channel-backed `Bind` for two in-process devices.
   - `tun/tuntest` — in-memory TUN device.
   - `tun/netstack` — full userspace TCP/IP for loopback end-to-end checks.
-- End-to-end tunnel behavior is exercised by `tests/netns.sh` (Linux network namespaces; needs
-  Linux + privileges).
+- In-process integration tunnels (real loopback UDP; a fake wstunnel relay driving the WS client in
+  wstunnel mode) run on every platform (`conn/*_test.go`).
+- End-to-end tunnel behavior is exercised by `tests/e2e/` (Go, Linux network namespaces, `//go:build
+  linux && e2e`; needs Linux + root) across UDP, WebSocket, and wstunnel (real wstunnel binary).
 - **Testcontainers are NOT used** — there is no external service infrastructure. This is the
   documented exception to the testcontainers rule in `go.md`.
 - The race detector (`-race`) is MANDATORY; data races are bugs, never warnings.

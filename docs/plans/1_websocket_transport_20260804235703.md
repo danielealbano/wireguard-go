@@ -3708,7 +3708,6 @@ var ifaceSeq atomic.Int32
 
 type lab struct {
 	t     *testing.T
-	pfx   string
 	ns    []string
 	procs []*exec.Cmd
 	socks []string // UAPI socket paths to remove on cleanup (SIGKILL leaves them behind)
@@ -3716,7 +3715,7 @@ type lab struct {
 
 func newLab(t *testing.T) *lab {
 	requireRootLinux(t)
-	l := &lab{t: t, pfx: fmt.Sprintf("wgt%d", os.Getpid())}
+	l := &lab{t: t}
 	t.Cleanup(l.cleanup)
 	return l
 }
@@ -3732,15 +3731,17 @@ func (l *lab) run(name string, args ...string) {
 	}
 }
 
-func (l *lab) addNS(suffix string) string {
-	ns := l.pfx + suffix
+func (l *lab) addNS() string {
+	ns := fmt.Sprintf("wgtns%d", ifaceSeq.Add(1))
 	l.run("ip", "netns", "add", ns)
 	l.ns = append(l.ns, ns)
 	return ns
 }
 
-// veth connects namespace ns to the bridge brName with address cidr (e.g. 10.9.0.1/24).
-func (l *lab) vethToBridge(ns, ifname, brName, cidr string) {
+// vethToBridge connects namespace ns to bridge brName with a globally-unique veth name
+// (so it never collides with a prior, not-yet-torn-down test's interfaces).
+func (l *lab) vethToBridge(ns, brName, cidr string) {
+	ifname := fmt.Sprintf("wgv%d", ifaceSeq.Add(1))
 	host := ifname + "h"
 	l.run("ip", "link", "add", ifname, "type", "veth", "peer", "name", host)
 	l.run("ip", "link", "set", ifname, "netns", ns)
@@ -3751,10 +3752,12 @@ func (l *lab) vethToBridge(ns, ifname, brName, cidr string) {
 	l.run("ip", "-n", ns, "link", "set", "lo", "up")
 }
 
-func (l *lab) addBridge(name string) {
+func (l *lab) addBridge() string {
+	name := fmt.Sprintf("wgbr%d", ifaceSeq.Add(1))
 	l.run("ip", "link", "add", name, "type", "bridge")
 	l.run("ip", "link", "set", name, "up")
 	l.t.Cleanup(func() { _ = exec.Command("ip", "link", "del", name).Run() })
+	return name
 }
 
 // startDaemon runs `ip netns exec <ns> wireguard-go -f <iface>` (UNIQUE iface name) with
@@ -4085,3 +4088,23 @@ jobs parallel; all quality gates pass and the e2e package compiles for `GOOS=lin
   real `Open`/`Close`/`Send` live in `ws_client.go`, `ws_bind.go` carries only the struct + parse/config
   methods, and the metrics/increment wiring is present from the start rather than added as a later
   modify. Behaviour is identical to the plan's final state.
+- **US13 harness — globally-unique interface/namespace names (bugfix).** The planned netns harness named
+  namespaces/bridge from a per-PID prefix (`l.pfx`) and used fixed veth names (`veth1`/`veth2`). Validating
+  the e2e in a privileged Docker Linux container showed these collide across the three sequential tests
+  (`ip link add veth1 … : File exists`) because cleanup ordering cannot be relied on. Fixed: `addNS`,
+  `addBridge`, and `vethToBridge` now derive **globally-unique** names from the atomic `ifaceSeq` counter
+  (`wgtns<n>`/`wgbr<n>`/`wgv<n>`) and `addBridge` returns its name; the `l.pfx` field is removed. `addNS()`
+  and `addBridge()` take no argument; `vethToBridge(ns, brName, cidr)` drops the `ifname` parameter.
+- **US13 found a US6 bug — `openServer` panic on empty `ws_listen` (bugfix).** A WS **server** bind can be
+  opened before `ws_listen` is configured: a device may go Up before the `ws_listen=` UAPI line, and
+  `device.BindUpdate()` no-ops while the device is down (`device/device.go:486`), so the first real
+  `openServer` runs with an empty listen URL → `mux.HandleFunc("")` → `panic: http: invalid pattern`,
+  crashing the daemon (surfaced by `TestE2E_WebSocket`). Fixed `conn/ws_server.go` `openServer`: when
+  `listenURL` is empty it returns a receiver with **no HTTP server** (the later `ws_listen` UAPI line
+  triggers `BindUpdate` → re-`Open` with the listener), and an empty URL path defaults to `/` (ServeMux
+  rejects an empty pattern). Covered by the new `TestWSServer_OpenWithoutListenURL` unit test and the WS
+  e2e. This is a production-robustness fix to US6 code discovered by US13's e2e.
+- **US13 — netns e2e validated locally in a privileged Docker Linux container.** The dev host is macOS
+  (no netns), so the Linux e2e was executed via `docker run --privileged golang:1.26` (real daemon + real
+  `wstunnel` binary): `TestE2E_UDP`, `TestE2E_WebSocket`, and `TestE2E_Wstunnel` all PASS. CI runs the same
+  via the `e2e` job.

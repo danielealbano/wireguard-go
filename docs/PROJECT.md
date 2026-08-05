@@ -76,7 +76,7 @@ the TUN device, UDP sockets, and the local UAPI control socket.
 | `replay/` | Anti-replay sliding-window filter (RFC 6479). |
 | `tai64n/` | TAI64N timestamp encoding for handshake initiation (anti-replay of handshakes). |
 | `rwcancel/` | Cancelable read/write on a file descriptor (used to interrupt blocking route/socket reads on shutdown). |
-| `tests/netns.sh` | Linux network-namespace end-to-end tunnel test (two peers over loopback). |
+| `tests/e2e/` | Linux network-namespace end-to-end tests (`//go:build linux && e2e`): the real daemon over netns for UDP, WebSocket (wss), and wstunnel (real wstunnel binary). |
 
 ---
 
@@ -179,8 +179,12 @@ Direct commands used for the quality gates (see `go.md` §4):
   - `conn/bindtest` — channel-backed `Bind` for two in-process devices.
   - `tun/tuntest` — in-memory TUN device.
   - `tun/netstack` — full userspace TCP/IP for loopback end-to-end checks.
-- `tests/netns.sh` runs a **two-peer end-to-end tunnel** across Linux network namespaces
-  (Linux + privileges required).
+- In-process integration tunnels run on **every platform**: a real-loopback-UDP two-device tunnel and a
+  **fake wstunnel relay** driving the WebSocket client in wstunnel mode (reproducing the masking/prefix
+  interop contracts).
+- `tests/e2e/` runs **real-daemon end-to-end tunnels** across Linux network namespaces (`//go:build linux
+  && e2e`; Linux + root) for UDP, WebSocket (self-signed wss), and wstunnel (the real wstunnel binary via
+  `WSTUNNEL_BIN`); the daemon under test is `WG_GO_BIN`. Run with `make test-e2e`.
 - **Testcontainers are not used** — there is no external service infrastructure. This is the
   documented exception to the testcontainers rule in `go.md`.
 - The race detector (`-race`) is mandatory.
