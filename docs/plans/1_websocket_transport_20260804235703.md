@@ -1746,17 +1746,29 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 		defer b.readWG.Done()
 		b.serverReadLoop(sc, &WSEndpoint{dst: dst, connID: id}, inbound, done)
 	})
-	b.srv = &http.Server{Handler: mux}
+	srv := &http.Server{Handler: mux}
+	if b.cfg.tlsServer != nil {
+		srv.TLSConfig = b.cfg.tlsServer // certs come from tlsServer
+	}
+	b.srv = srv // stored under b.mu; Close reads it under b.mu to shut down
 	ln, err := net.Listen("tcp", u.Host)
 	if err != nil {
 		return nil, 0, err
 	}
+	// Serve goroutine references only srv/ln locals (never the b.srv field, which Close
+	// nils), and is tracked on readWG so Close's Wait() joins it â€” srv.Close() makes
+	// Serve return and release the listener before Close returns (BindUpdate re-Open).
+	b.readWG.Add(1)
 	go func() {
+		defer b.readWG.Done()
+		var serveErr error
 		if b.cfg.tlsServer != nil {
-			b.srv.TLSConfig = b.cfg.tlsServer
-			_ = b.srv.ServeTLS(ln, "", "") // certs come from tlsServer
+			serveErr = srv.ServeTLS(ln, "", "")
 		} else {
-			_ = b.srv.Serve(ln)
+			serveErr = srv.Serve(ln)
+		}
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			b.cfg.logger.errorf("websocket server on %s stopped: %v", listenURL, serveErr)
 		}
 	}()
 	return []ReceiveFunc{makeWSReceiveFunc(inbound, done)}, port, nil
@@ -2731,6 +2743,14 @@ up (pipeline requires the last item to verify the whole plan). Depends on: US1â€
   `SetWSListen` (a `ws_listen=` UAPI line triggers `BindUpdate`) and read by `openServer`, which can run
   concurrently. `SetWSListen` now writes it under `b.mu`, and `openServer` (called from `Open` under
   `b.mu`) snapshots it into a local so the serve goroutine never touches the field. `-race` clean.
+- **Server serve goroutine: snapshot `srv` + track on `readWG` (US6).** The planned `openServer` read
+  and mutated the `b.srv` field inside the serve goroutine, which is neither `b.mu`-guarded nor joined,
+  so `Close` nil-ing `b.srv` raced with it (data race + a nil `*http.Server` panic in `Serve`),
+  reachable on a `BindUpdate`. Fixed: `srv`/`TLSConfig` are set on a local captured under `b.mu`, the
+  goroutine references only the `srv`/`ln` locals, and it is tracked on `readWG` so `Close`'s `Wait()`
+  joins it (the listener port is released before `Close` returns, so a `BindUpdate` re-`Open` on the
+  same listen address does not hit "address already in use"). The `openServer` code block is
+  synchronized. A tight Open/Close server stress test guards it under `-race`.
 - **Ping is bounded by a timeout (US4).** The planned `pingLoop` called `c.conn.Ping(c.ctx)` with no
   deadline; because `coder/websocket`'s `Ping` blocks until a pong or the ctx is cancelled, a half-open
   (silent) peer would never be detected and the backstop would never fire. Each ping is now bounded by
