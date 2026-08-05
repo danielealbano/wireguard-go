@@ -266,10 +266,10 @@ func (device *Device) handleDeviceLine(key, value string) error {
 
 // An ipcSetPeer is the current state of an IPC set operation on a peer.
 type ipcSetPeer struct {
-	*Peer         // Peer is the current peer being operated on
-	dummy   bool  // dummy reports whether this peer is a temporary, placeholder peer
-	created bool  // new reports whether this is a newly created peer
-	pkaOn   bool  // pkaOn reports whether the peer had the persistent keepalive turn on
+	*Peer        // Peer is the current peer being operated on
+	dummy   bool // dummy reports whether this peer is a temporary, placeholder peer
+	created bool // new reports whether this is a newly created peer
+	pkaOn   bool // pkaOn reports whether the peer had the persistent keepalive turn on
 	// WebSocket peer keys, collected across lines and consumed in handlePostConfig.
 	// Reset per peer in handlePublicKeyLine so peer N never inherits peer N-1's values.
 	wsEndpointURL string

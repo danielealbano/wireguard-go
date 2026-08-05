@@ -45,11 +45,11 @@ type Snapshot struct {
 type Collector struct {
 	snapshot func() Snapshot
 
-	info, peers, hsRateLimited, hsTotal                          *prometheus.Desc
+	info, peers, hsRateLimited, hsTotal                           *prometheus.Desc
 	wsConnActive, wsConnTotal, wsReconnects, wsDropped, wsPingRTT *prometheus.Desc
 	wsRxMsgs, wsTxMsgs, wsRxBytes, wsTxBytes                      *prometheus.Desc
-	peerTx, peerRx, peerLastHS, peerConnected                    *prometheus.Desc
-	peerReconnects, peerPingRTT                                  *prometheus.Desc
+	peerTx, peerRx, peerLastHS, peerConnected                     *prometheus.Desc
+	peerReconnects, peerPingRTT                                   *prometheus.Desc
 }
 
 func NewCollector(snapshot func() Snapshot) *Collector {
