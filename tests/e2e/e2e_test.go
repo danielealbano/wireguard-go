@@ -65,7 +65,13 @@ func TestE2E_WebSocket(t *testing.T) {
 	}
 }
 
-func TestE2E_Wstunnel(t *testing.T) {
+// TestE2E_Wstunnel covers the default unmasked path; TestE2E_WstunnelMasked covers the
+// opt-in ws_mask path, where the wstunnel server MUST run --websocket-mask-frame to
+// unmask the client's masked frames (mask modes must match).
+func TestE2E_Wstunnel(t *testing.T)       { runWstunnelE2E(t, false) }
+func TestE2E_WstunnelMasked(t *testing.T) { runWstunnelE2E(t, true) }
+
+func runWstunnelE2E(t *testing.T, masked bool) {
 	l := newLab(t)
 	br := l.addBridge()
 	nsC := l.addNS() // client, 10.9.0.1
@@ -83,15 +89,21 @@ func TestE2E_Wstunnel(t *testing.T) {
 	l.uapiSet(wgS, fmt.Sprintf("private_key=%s\nlisten_port=51820\npublic_key=%s\nallowed_ip=10.10.0.1/32\n", privS, pubC))
 	l.ifup(nsS, wgS, "10.10.0.2/24")
 
-	// Real wstunnel server (plain ws) forwarding to the wg udp endpoint.
-	l.startWstunnel(nsW, "ws://10.9.0.3:8080", "10.9.0.2:51820")
+	// wstunnel + client masking must agree: masked client <-> --websocket-mask-frame server.
+	var wstunnelArgs []string
+	clientEnv := []string{"WG_TRANSPORT=ws"}
+	if masked {
+		wstunnelArgs = []string{"--websocket-mask-frame"}
+		clientEnv = append(clientEnv, "WG_WS_MASK=1")
+	}
+	l.startWstunnel(nsW, "ws://10.9.0.3:8080", "10.9.0.2:51820", wstunnelArgs...)
 
-	// wg WebSocket client in wstunnel mode (unmasked default) through the real wstunnel.
-	wgC := l.startDaemon(nsC, []string{"WG_TRANSPORT=ws"})
+	// wg WebSocket client in wstunnel mode through the real wstunnel.
+	wgC := l.startDaemon(nsC, clientEnv)
 	l.uapiSet(wgC, fmt.Sprintf("private_key=%s\npublic_key=%s\nendpoint=ws://10.9.0.3:8080/v1\nws_mode=wstunnel\nws_target=10.9.0.2:51820\nallowed_ip=10.10.0.2/32\npersistent_keepalive_interval=1\n", privC, pubS))
 	l.ifup(nsC, wgC, "10.10.0.1/24")
 
 	if !l.ping(nsC, "10.10.0.2") {
-		t.Fatal("ping through the wstunnel tunnel failed")
+		t.Fatalf("ping through the wstunnel tunnel failed (masked=%v)", masked)
 	}
 }
