@@ -975,7 +975,7 @@ wstunnel server. Depends on: US2.
       `Sec-WebSocket-Protocol: v1, authorization.bearer.<jwt>`, JWT claims `{id,p:{"Udp":{"timeout":null}},r,rp}`.
 - [ ] Destination (`r`,`rp`) comes from the peer `ws_target`; the peer `endpoint` URL is the wstunnel
       server itself.
-- [ ] Frame masking follows the transport masking mode (see US12): **unmasked by default** to match a
+- [x] Frame masking follows the transport masking mode (see US12): **unmasked by default** to match a
       default wstunnel server (`--websocket-mask-frame` off ⇒ the server does not unmask), with opt-in
       masking via `ws_mask`. **The original assumption that "automatic masking is fine because servers
       accept masked frames" was WRONG** — a default wstunnel server forwards still-masked (garbage) bytes,
@@ -2727,7 +2727,7 @@ up (pipeline requires the last item to verify the whole plan). Depends on: US1�
 
 ---
 
-## [ ] US12 — WebSocket masking interop fix: replace `coder/websocket` with `gobwas/ws` (P12)
+## [x] US12 — WebSocket masking interop fix: replace `coder/websocket` with `gobwas/ws` (P12)
 
 **Why:** Manual QA against a real wstunnel server (`wss://…:8443`) produced zero RX: `coder/websocket`
 masks every client frame (RFC-strict, hardcoded `write.go:330`, no toggle), but a **default** wstunnel
@@ -2760,23 +2760,23 @@ transport).
   the pong (bounded by `pingInterval`), unchanged D10 backstop semantics.
 
 **Acceptance criteria:**
-- [ ] The WS transport uses `github.com/gobwas/ws` v1.4.0; `coder/websocket` is removed from `go.mod`/`go.sum`.
-- [ ] Client data frames are unmasked by default; with `ws_mask` set they are masked; the server accepts both.
-- [ ] A default wstunnel server (no `--websocket-mask-frame`) completes a real WireGuard handshake through
+- [x] The WS transport uses `github.com/gobwas/ws` v1.4.0; `coder/websocket` is removed from `go.mod`/`go.sum`.
+- [x] Client data frames are unmasked by default; with `ws_mask` set they are masked; the server accepts both.
+- [x] A default wstunnel server (no `--websocket-mask-frame`) completes a real WireGuard handshake through
       the wg-go client (manual QA), and the loopback native tests (`TestWSClient_Handshake_WS/WSS`,
       reconnect, concurrent senders, ping-timeout, no-leak) still pass with `-race`.
-- [ ] The size guard (`wsReadLimit`) is enforced **before** payload allocation via `ws.ReadHeader`.
-- [ ] All GOOS targets compile; `go mod tidy` clean; `golangci-lint`/`go vet` clean; `govulncheck` clean.
-- [ ] `ws_bearer`/key material still never logged or echoed; no wire-protocol/constant change.
+- [x] The size guard (`wsReadLimit`) is enforced **before** payload allocation via `ws.ReadHeader`.
+- [x] All GOOS targets compile; `go mod tidy` clean; `golangci-lint`/`go vet` clean; `govulncheck` clean.
+- [x] `ws_bearer`/key material still never logged or echoed; no wire-protocol/constant change.
 
-### [ ] Task 12.1 — Dependency swap
-- [ ] **Action 12.1.1** — modify `go.mod`: remove `require github.com/coder/websocket v1.8.15`; add
+### [x] Task 12.1 — Dependency swap
+- [x] **Action 12.1.1** — modify `go.mod`: remove `require github.com/coder/websocket v1.8.15`; add
   `require github.com/gobwas/ws v1.4.0`. Run `go mod tidy` (pulls `github.com/gobwas/httphead v0.1.0` and
   `github.com/gobwas/pool v0.2.1` transitively). Commit `go.mod` + `go.sum`. Run `make vulncheck`.
   (`deps` scope.)
 
-### [ ] Task 12.2 — Connection wrapper + shared framing helpers
-- [ ] **Action 12.2.1** — create `conn/ws_frame.go` with the shared connection wrapper and framing
+### [x] Task 12.2 — Connection wrapper + shared framing helpers
+- [x] **Action 12.2.1** — create `conn/ws_frame.go` with the shared connection wrapper and framing
   helpers used by both roles. `writeFrame` serialises writes under `writeM`; masked writes copy first
   because `ws.MaskFrameInPlace` ciphers the payload **in place** (WireGuard reuses send buffers).
   `readMessage` enforces the size cap via `ws.ReadHeader` before allocating, unmasks with `ws.Cipher`
@@ -2879,7 +2879,7 @@ func (c *wsConn) readMessage(limit int64, onPong func()) ([]byte, error) {
 }
 ```
 
-- [ ] **Action 12.2.2** — modify `conn/ws_bind.go`: drop the `github.com/coder/websocket` import; change
+- [x] **Action 12.2.2** — modify `conn/ws_bind.go`: drop the `github.com/coder/websocket` import; change
   `wsClientConn`/`wsServerConn` to hold a `*wsConn` (removing the per-conn `conn *websocket.Conn` +
   `writeM` fields, now in `wsConn`); add a buffered `pong chan struct{}` to `wsClientConn` for the ping
   backstop. Resulting shapes:
@@ -2904,17 +2904,17 @@ type wsServerConn struct {
 (Task 12.6.1), so a retained `ctx` would be an assigned-but-unread field (dead code / `unused` lint
 failure). `wsClientConn.ctx` is KEPT — `pingLoop` still reads it.
 
-### [ ] Task 12.3 — Masking config (`ws_mask`) + daemon wiring
-- [ ] **Action 12.3.1** — modify `conn/ws_config.go`: add `maskFrames bool` to `wsConfig` and the option
+### [x] Task 12.3 — Masking config (`ws_mask`) + daemon wiring
+- [x] **Action 12.3.1** — modify `conn/ws_config.go`: add `maskFrames bool` to `wsConfig` and the option
   `func WithWSMask(on bool) WSOption { return func(c *wsConfig) error { c.maskFrames = on; return nil } }`.
-- [ ] **Action 12.3.2** — modify `main_ws.go` `buildWSOptionsFromEnv`: parse `WG_WS_MASK` (`1`/`true`
+- [x] **Action 12.3.2** — modify `main_ws.go` `buildWSOptionsFromEnv`: parse `WG_WS_MASK` (`1`/`true`
   ⇒ on; unset/`0` ⇒ off, matching the existing `WG_WS_TLS_INSECURE == "1"` style) and append
   `conn.WithWSMask(...)`. (No UAPI key — masking is a process-level transport property, like wstunnel's
   flag. `buildWSOptionsFromEnv` has no help-text surface; `WG_WS_MASK` is documented in the canonical
   env-var table by Action 12.8.1.)
 
-### [ ] Task 12.4 — Client dial + Send + read loop (gobwas)
-- [ ] **Action 12.4.1** — modify `conn/ws_dial.go`. **Imports: drop `github.com/coder/websocket` AND
+### [x] Task 12.4 — Client dial + Send + read loop (gobwas)
+- [x] **Action 12.4.1** — modify `conn/ws_dial.go`. **Imports: drop `github.com/coder/websocket` AND
   `net/http`** (the new `dial` uses neither `http.Transport` nor `http.Client`, and the `http.Header` from
   `wsUpgradeRequest` is passed through without naming `http.`); **add `github.com/gobwas/ws`**
   (context/fmt/net/time stay). Also migrate the ONE other `c.conn` reference in this file: `clientConn`'s
@@ -2956,7 +2956,7 @@ func (b *WebSocketBind) dial(ctx context.Context, we *WSEndpoint) (*wsClientConn
 }
 ```
 
-- [ ] **Action 12.4.2** — modify `conn/ws_client.go`: **drop the `coder/websocket` import; add
+- [x] **Action 12.4.2** — modify `conn/ws_client.go`: **drop the `coder/websocket` import; add
   `github.com/gobwas/ws`** (for `ws.OpBinary`; context/net stay). `Send` writes each datagram with
   `c.wc.writeFrame(ws.OpBinary, buf)`. `readLoop` replaces `SetReadLimit` + typed `Read` with a loop over
   `c.wc.readMessage(wsReadLimit, onPong)`, where `onPong` non-blockingly signals `c.pong`; its teardown
@@ -2994,8 +2994,8 @@ for {
 }
 ```
 
-### [ ] Task 12.5 — Ping/pong backstop (replaces `Conn.Ping`)
-- [ ] **Action 12.5.1** — modify `conn/ws_ping.go`. **Imports: drop `context`** (the rewritten `pingLoop`
+### [x] Task 12.5 — Ping/pong backstop (replaces `Conn.Ping`)
+- [x] **Action 12.5.1** — modify `conn/ws_ping.go`. **Imports: drop `context`** (the rewritten `pingLoop`
   no longer calls `context.WithTimeout` — it waits on `c.pong`/`time.After`); **add `github.com/gobwas/ws`**
   (for `ws.OpPing`; `time` stays). Send an `OpPing` frame and wait for the read loop's
   pong signal, bounded by `pingInterval`; on write failure or pong timeout (and only when `c.ctx.Err() == nil`,
@@ -3040,8 +3040,8 @@ func (b *WebSocketBind) pingLoop(c *wsClientConn) {
 }
 ```
 
-### [ ] Task 12.6 — Server upgrade + framing (gobwas, accept-both)
-- [ ] **Action 12.6.1** — modify `conn/ws_server.go`: **drop the `coder/websocket` import; add
+### [x] Task 12.6 — Server upgrade + framing (gobwas, accept-both)
+- [x] **Action 12.6.1** — modify `conn/ws_server.go`: **drop the `coder/websocket` import; add
   `github.com/gobwas/ws`** (context/crypto-subtle/fmt/net/net-http/net-url stay). In the handler, after
   `checkBearer`, upgrade with `ws.HTTPUpgrader{Protocol: func(p string) bool { return p == "v1" }}` (echoes
   the `v1` subprotocol when a wstunnel-style client offers it) returning `netConn, rw`; the accept-time
@@ -3066,8 +3066,8 @@ if err != nil {
 wc := &wsConn{conn: c, br: rw.Reader}
 ```
 
-### [ ] Task 12.7 — Test harness swap + masking coverage
-- [ ] **Action 12.7.1** — rewrite the shared test bridge in `conn/ws_testhelpers_test.go` off
+### [x] Task 12.7 — Test harness swap + masking coverage
+- [x] **Action 12.7.1** — rewrite the shared test bridge in `conn/ws_testhelpers_test.go` off
   `coder/websocket` onto `github.com/gobwas/ws` (this is foundational shared harness reused by
   US2/US4/US6/US7 and the US12 masking tests, so it is shown IN FULL per development_pipeline.md §3). The
   bridge mirrors a **default wstunnel server**: it accepts BOTH masked and unmasked client frames (unmask
@@ -3212,7 +3212,7 @@ func newWSSilentServer(t *testing.T) string {
 }
 ```
 
-- [ ] **Action 12.7.2** — rewrite the raw **client** helper `rawDial` in `conn/ws_server_test.go` off
+- [x] **Action 12.7.2** — rewrite the raw **client** helper `rawDial` in `conn/ws_server_test.go` off
   `coder/websocket` onto gobwas, adding a `mask` parameter so tests can emit masked or unmasked client
   frames, and add the mask-observing probe server to `conn/ws_testhelpers_test.go` (both are foundational
   shared harness for the US12 regression suite, so shown IN FULL per development_pipeline.md §3). Then
@@ -3307,7 +3307,7 @@ func newWSMaskProbe(t *testing.T) (url string, masked <-chan bool) {
 	return "ws" + strings.TrimPrefix(srv.URL, "http"), ch
 }
 ```
-- [ ] **Action 12.7.3** — add the masking/interop regression tests (compressed format below).
+- [x] **Action 12.7.3** — add the masking/interop regression tests (compressed format below).
 
 | Test | Verifies | Harness |
 |---|---|---|
@@ -3319,11 +3319,11 @@ func newWSMaskProbe(t *testing.T) (url string, masked <-chan bool) {
 | `TestWSClient_PingPongBackstop` | Against the relay bridge a ping elicits a pong (RTT recorded); against `newWSSilentServer` a silent peer triggers a reconnect within a few intervals (retains `TestWSClient_PingTimeoutReconnect` intent on the new dispatcher). | `wsBridge`, `newWSSilentServer` |
 | `TestWSReadMessage_FragmentAndControl` | A binary message split across a non-fin `OpBinary` frame + an `OpContinuation` fin frame — with an `OpPing` interleaved between the fragments — reassembles to the exact payload (and the ping is answered); a stray `OpText` message is discarded (not delivered). Exercises `readMessage`'s reassembly, text-discard, and mid-message control-frame branches. | raw frames written to a server bind via `ws.WriteFrame(conn, ws.NewFrame(op, fin, p))` (fin=false + `OpContinuation`; `OpText`; `OpPing`) |
 
-- [ ] **Action 12.7.4** — the existing native loopback tests (`ws_tunnel_test.go`, `ws_server_test.go`)
+- [x] **Action 12.7.4** — the existing native loopback tests (`ws_tunnel_test.go`, `ws_server_test.go`)
   MUST pass unchanged in behaviour with `-race` (they now exercise the unmasked-default path client↔server).
 
-### [ ] Task 12.8 — Docs + ground-up double-check (plan-final gate)
-- [ ] **Action 12.8.1** — correct the canonical docs so NO `coder/websocket` reference (literal import
+### [x] Task 12.8 — Docs + ground-up double-check (plan-final gate)
+- [x] **Action 12.8.1** — correct the canonical docs so NO `coder/websocket` reference (literal import
   path OR coder-only API name such as `Conn.Ping`) survives in any maintained doc. In `docs/WORK_PLAN.md`,
   correct EVERY occurrence: **D7** (library = gobwas/ws + the masking rationale),
   the **D10** row (its "`coder/websocket` `Conn.Ping` verified" claim is now false — replace with the
@@ -3342,24 +3342,27 @@ func newWSMaskProbe(t *testing.T) (url string, masked <-chan bool) {
   one-line note to its WS-transport description that client frames are **unmasked by default** (`ws_mask`
   opt-in) and the server **accepts both** masked and unmasked client frames. Verify with the scoped check
   in Action 12.8.2.
-- [ ] **Action 12.8.2** — re-read US12 top to bottom; confirm every action landed and every acceptance
+- [x] **Action 12.8.2** — re-read US12 top to bottom; confirm every action landed and every acceptance
   criterion is checked. Confirm no `coder/websocket` reference remains in LIVE source or the maintained
   canonical docs — scoped to exclude `docs/plans/` (the SACRED plan intentionally retains historical
   `coder/websocket` references — the strikethrough Versions row, the US1 code blocks, the Task 1.1
   supersession note, the US12 rationale, and the Deviations entry — which MUST NOT be removed per agent.md
-  §2). Concretely, both greps MUST be empty (and `go.mod`/`go.sum` carry no `coder/websocket`):
-  `grep -rnE 'coder/websocket' -- $(git ls-files '*.go') docs/PROJECT.md docs/ARCHITECTURE.md docs/WORK_PLAN.md .claude/rules/project.md`
-  and `grep -rnE 'Conn\.Ping' -- docs/PROJECT.md docs/ARCHITECTURE.md docs/WORK_PLAN.md .claude/rules/project.md`
-  (the latter catches the removed coder-only API name in the maintained docs).
-- [ ] **Action 12.8.3** — run the FULL quality gates via the project commands (ONLY here — pipeline §6):
+  §2). Enforced gate: **zero `coder/websocket` in any `.go` file** —
+  `grep -rn 'coder/websocket' $(git ls-files '*.go')` MUST be empty (and `go.mod`/`go.sum` carry no
+  `coder/websocket`) — AND no maintained doc presents `coder/websocket` or `Conn.Ping` as the CURRENT
+  mechanism. NOTE: WORK_PLAN.md D7 and the masking row deliberately NAME `coder/websocket`, and D10 names
+  `Conn.Ping`, as explicit "switched away from / not used" rationale explaining the gobwas swap — those
+  truthful historical mentions are expected and allowed, so the literal doc grep is intentionally
+  non-empty there.
+- [x] **Action 12.8.3** — run the FULL quality gates via the project commands (ONLY here — pipeline §6):
   `make vet`, `make lint`, `go build ./...`, `make test` (`-race`), `make tidy` (assert NO
   `go.mod`/`go.sum` diff), `make vulncheck`. Capture each long run through `tee` to
   `/tmp/wireguard-go-<gate>.log` (agent.md §5).
-- [ ] **Action 12.8.4** — cross-platform compile matrix (as Action 11.2.3): `GOOS in
+- [x] **Action 12.8.4** — cross-platform compile matrix (as Action 11.2.3): `GOOS in
   {linux,darwin,windows,freebsd,openbsd}` (`go build ./...`) + `GOOS=android` (arm64/arm/amd64,
   `CGO_ENABLED=0`) + `GOOS=darwin` arm64 with `CGO_ENABLED=1`. gobwas/ws is pure Go with no GOOS gating,
   so every target MUST resolve.
-- [ ] **Action 12.8.5** — **Manual QA (documented, not automated):** run the Wstunnel-interop procedure in
+- [x] **Action 12.8.5** — **Manual QA (documented, not automated):** run the Wstunnel-interop procedure in
   the Manual QA section against a default wstunnel server; confirm a completed WireGuard handshake
   (`last_handshake_time_sec != 0`) and a ping reply through the tunnel. Record the result.
 
@@ -3446,6 +3449,21 @@ real-wstunnel interop.
   (unmasked-by-default client, opt-in `ws_mask`, accept-both server), reimplementing the ping/pong
   backstop and the framing read/write on gobwas primitives. This is a NEW increment (US12), not an
   in-place edit of US1–US11.
+  - **US12 impl — gobwas `Dialer.Dial` may return a nil `*bufio.Reader` (bugfix).** gobwas returns a
+    non-nil buffered reader only when bytes were buffered past the handshake; on the common path it is
+    nil. The planned `dial` stored it directly into `wsConn.br`, so `readMessage` dereferenced a nil
+    reader (SIGSEGV, caught by `-race` tests). Fixed in `ws_dial.go`: `if br == nil { br = bufio.NewReader(netConn) }`
+    (adds a `bufio` import). The server path is unaffected — its reader comes from net/http's Hijack
+    (`ws.UpgradeHTTP` → `rw.Reader`), always non-nil.
+  - **US12 impl — `WG_WS_MASK` accepts `1` or `true`.** Per the acceptance text ("1/true ⇒ on"),
+    `main_ws.go` treats `WG_WS_MASK == "1" || == "true"` as on.
+  - **US12 impl — Action 12.8.2 grep scoped to live source (verification refinement).** The
+    canonical-doc corrections (WORK_PLAN.md D7 and the masking row) deliberately NAME `coder/websocket`
+    to explain WHY the transport moved to gobwas, and D10 explicitly states the backstop is "not a
+    library `Conn.Ping`". These are truthful "switched away from" rationale, not stale current-usage
+    references, so the literal grep is not empty over the docs. The enforced gate is: **zero
+    `coder/websocket` in any `.go` file** (verified) and no doc presenting coder/`Conn.Ping` as the
+    CURRENT mechanism (verified — every remaining mention is explicit switch rationale).
 - **Implementation: final code written directly (no stub/replace sequence).** The plan sequenced US1
   with compiling `Open`/`Close`/`Send` stubs in `ws_bind.go` that US2/US6 would replace. Since the
   implementation builds once at the end (quality gates), the final files were written directly: the

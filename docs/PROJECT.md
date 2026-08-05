@@ -43,7 +43,7 @@ dependencies). Re-verify against `proxy.golang.org` before bumping.
 | Crypto | `golang.org/x/crypto` `v0.54.0` | Curve25519, ChaCha20-Poly1305, BLAKE2s, Poly1305. |
 | Networking | `golang.org/x/net` `v0.57.0` | IPv4/IPv6 header helpers, DNS message parsing. |
 | Syscalls | `golang.org/x/sys` `v0.47.0` | Per-OS socket/TUN/route control (unix, windows). |
-| WebSocket | `github.com/coder/websocket` `v1.8.15` | WebSocket transport (client + server) over `net/http`. |
+| WebSocket | `github.com/gobwas/ws` `v1.4.0` | WebSocket transport (client + server) over `net/http`. Frame-level masking control (unmasked-by-default client, opt-in `ws_mask`, accept-both server) for wstunnel interop. |
 | JWT / UUID | `github.com/golang-jwt/jwt/v5` `v5.3.1`, `github.com/google/uuid` `v1.6.0` | wstunnel interop handshake (HS256 JWT + UUIDv4). |
 | Metrics | `github.com/prometheus/client_golang` `v1.24.1` | Optional Prometheus `/metrics` listener (off by default). |
 | Userspace stack | `gvisor.dev/gvisor` (pinned) | `tun/netstack` in-process TCP/IP stack. |
@@ -111,6 +111,7 @@ users the in-kernel WireGuard is preferable.
 | `WG_WS_TLS_CA` / `WG_WS_TLS_SERVERNAME` / `WG_WS_TLS_INSECURE` | Client `wss` options (empty ⇒ system roots; `WG_WS_TLS_INSECURE=1` skips verification). |
 | `WG_WS_BEARER` | Server-side expected pre-shared bearer (coarse gate, constant-time checked before upgrade). Never logged. |
 | `WG_WS_PING_INTERVAL` | WebSocket ping/backstop interval (Go duration; sane default). |
+| `WG_WS_MASK` | `1`/`true` masks client WebSocket frames (default off, unmasked — matches a default wstunnel server). When on, the peer wstunnel server MUST run `--websocket-mask-frame` (mask modes must match). |
 | `WG_WS_TRUSTED_PROXIES` | Comma-separated CIDRs from which `X-Forwarded-For` is trusted (server behind an HTTP reverse proxy). |
 | `WG_METRICS_LISTEN` | Prometheus `/metrics` listen address. Empty ⇒ metrics OFF. |
 

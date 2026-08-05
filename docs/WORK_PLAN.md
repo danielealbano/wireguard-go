@@ -37,10 +37,10 @@ Registry (ghcr.io)** via CI/CD.
 | D4 | **Both server and client roles, first-class and symmetric.** The same WS URL is the server's listen address and the client's peer endpoint. | Agreed. |
 | D5 | **`ws_mode = standard \| wstunnel`** selects the dialect bundle (path suffix, handshake header, destination encoding, framing quirks, future additions). | Agreed. `standard` = our native dialect; `wstunnel` = interop. |
 | D6 | **Auth is orthogonal to mode**: optional pre-shared bearer, write-only/non-logged. `standard` → `Authorization: Bearer <token>`; `wstunnel` → optional basic-auth on top of the auto-JWT. WireGuard's Noise handshake remains the real authentication; the bearer is a coarse gate. **Role split (the server validates BEFORE the WS upgrade, before any peer identity exists, so it cannot use a per-peer key):** the **client** presents a per-peer bearer via the UAPI `ws_bearer` key; the **server** validates against a single **process-level** expected bearer (`WG_WS_BEARER`), constant-time compared, empty ⇒ gate off. | Agreed. |
-| D7 | **Library: `github.com/coder/websocket` v1.8.15 on stdlib `net/http`.** | Latest verified (proxy.golang.org). h1 Upgrade + `http.Hijacker`; provides `Conn.Ping`. |
+| D7 | **Library: `github.com/gobwas/ws` v1.4.0 on stdlib `net/http`.** | h1 Upgrade via `ws.UpgradeHTTP` (server) / `ws.Dialer` (client). Chosen over `coder/websocket` because it exposes frame-level masking control (`ws.NewBinaryFrame` unmasked / `ws.MaskFrameInPlace`), which the wstunnel interop requires — a default wstunnel server does NOT unmask, so the client MUST send unmasked frames by default (see the masking row below). |
 | D8 | **Framing: 1 WireGuard datagram = 1 WebSocket binary message.** No length prefix. | Matches wstunnel (`MAX_PACKET_LENGTH = 64 KiB`, `transport/io.rs`) and is native to WS. The `conn`-side read loop guards against a message exceeding the caller-provided receive-buffer length (the device sizes those buffers to `MaxMessageSize`, [device/constants.go:31](device/constants.go#L31)); the guard limit lives in `conn` (buffer length / a `conn` constant), NOT imported from `device` — `device` imports `conn` ([device/device.go:14](device/device.go#L14)), so the reverse would be an import cycle. |
 | D9 | **Roaming = reconnect.** Server side: the endpoint wraps the live connection; a reconnecting client rebinds via `SetEndpointFromPacket`. Client side: reconnect + DNS re-resolve + re-upgrade. | Verified mechanism ([device/peer.go:279](device/peer.go#L279); receive death-spiral contract [device/receive.go:110-125](device/receive.go#L110-L125)). |
-| D10 | **Network-switch detection is OS-notification-first.** The primary trigger is an OS path notification driving `device.BindUpdate()` ([device/device.go:471](device/device.go#L471) — closes and re-opens the bind on the same instance), which for the WS bind means reconnect + egress re-pin. **WS ping/pong is a backstop only**, kept for (a) silent connection death / half-open TCP / proxy idle-drop that raises no path event, (b) proxy idle-timeout keepalive, (c) the RTT metric. Configurable interval. | Mirrors the official apps: Apple `NWPathMonitor` → `wgBumpSockets` → `BindUpdate` (`WireGuardAdapter.swift:184-188`, `api-apple.go:176-188`); Android equivalent is `ConnectivityManager.NetworkCallback` → bump (D19). `coder/websocket` `Conn.Ping` verified. |
+| D10 | **Network-switch detection is OS-notification-first.** The primary trigger is an OS path notification driving `device.BindUpdate()` ([device/device.go:471](device/device.go#L471) — closes and re-opens the bind on the same instance), which for the WS bind means reconnect + egress re-pin. **WS ping/pong is a backstop only**, kept for (a) silent connection death / half-open TCP / proxy idle-drop that raises no path event, (b) proxy idle-timeout keepalive, (c) the RTT metric. Configurable interval. | Mirrors the official apps: Apple `NWPathMonitor` → `wgBumpSockets` → `BindUpdate` (`WireGuardAdapter.swift:184-188`, `api-apple.go:176-188`); Android equivalent is `ConnectivityManager.NetworkCallback` → bump (D19). The WS ping/pong backstop is implemented over gobwas control frames (`ws.OpPing`/`ws.OpPong` dispatched in the read loop), not a library `Conn.Ping`. |
 | D11 | **Egress pinning** re-applied on every dial to prevent the WS transport looping back into the tun: `IP_BOUND_IF`/`IPV6_BOUND_IF` (Darwin), `SO_MARK` + policy routing (Linux/Android), via `net.Dialer.Control`. | Verified constants: `IP_BOUND_IF=0x19`, `IPV6_BOUND_IF=0x7d` (x/sys@v0.32.0); `SO_MARK` path exists ([conn/mark_unix.go:19-27](conn/mark_unix.go#L19-L27)). |
 | D12 | **"Works on network switch" = OS-notification-driven `BindUpdate` reconnect (D10) + egress re-pinning (D11), with ping as backstop.** Embedded apps drive the bump themselves; the standalone daemon runs its own path monitors (D19). No wg-quick-style route-table management in the daemon; the OS/app owns the tun routes. | Agreed. |
 | D13 | **Trusted-proxy source-IP** (opt-in): when explicitly configured as behind a trusted proxy, derive the endpoint IP from `X-Forwarded-For` so the handshake rate-limiter and MAC2 cookies stay per-client. Off by default; forged `XFF` ignored when not configured. **Scope: a native wg-go WS server behind an HTTP reverse proxy ONLY** — never the wstunnel path (see §7 resolution). | Agreed ("we need this properly"). Rate-limiter keys on `DstIP()` ([device/receive.go:336](device/receive.go#L336)); cookies on `DstToBytes()` ([device/receive.go:329](device/receive.go#L329)). |
@@ -147,7 +147,7 @@ flowchart TD
   - `conn/default.go` / `main.go`: startup transport switch on `WG_TRANSPORT`; UDP remains default.
   - `device/uapi.go`: accept the additive keys from §4 (device: `ws_listen`; peer: `ws_mode`,
     `ws_target`, `ws_bearer` write-only, URL `endpoint`); keep unknown-key rejection for everything else.
-  - `go.mod`: add `github.com/coder/websocket`; `go mod tidy`; `govulncheck`.
+  - `go.mod`: add `github.com/gobwas/ws`; `go mod tidy`; `govulncheck`.
 - **Tests:** endpoint parse/round-trip (`ws`/`wss`, path, port); UAPI additive-key parse + `ws_bearer`
   not echoed by `IpcGet`; transport selection.
 - **Done when:** device builds and runs with `WG_TRANSPORT=ws` selecting the (not-yet-functional) WS
@@ -156,7 +156,7 @@ flowchart TD
 ### P2 — Client bind: standard mode, single connection (`ws://` then `wss://`)
 - **Depends on:** P1.
 - **Changes:**
-  - `conn/ws_client.go` (new): dial via `coder/websocket` + `net/http`; upgrade at the URL path; one
+  - `conn/ws_client.go` (new): dial via `gobwas/ws` (`ws.Dialer`); upgrade at the URL path; one
     long-lived connection per peer endpoint, dialed on demand (first `Send`/handshake). Per-connection
     **write mutex** (concurrent senders: [device/send.go](device/send.go), keepalive, cookie). Read loop
     turns each binary message into a datagram delivered through the shared inbound queue that `Open`'s
@@ -183,7 +183,7 @@ flowchart TD
   (the bind's `Close` must tear down all connections cleanly, `Open` re-arms; the next dial
   **re-resolves DNS**, re-upgrades, and re-pins) driven by the embedder's OS path monitor or the
   D19 standalone monitors; **secondary:** send/receive errors on the connection; **backstop:** WS
-  ping ticker (`Conn.Ping`, configurable) for silent death / half-open / proxy idle-drop + RTT
+  ping ticker (gobwas `ws.OpPing`/`ws.OpPong` control frames, configurable) for silent death / half-open / proxy idle-drop + RTT
   capture. Transient dial failures are swallowed with bounded backoff; `net.ErrClosed` surfaces
   only on real `Close`.
 - **Tests:** a `Close`→`Open` cycle (what `BindUpdate` performs) tears down and re-arms cleanly and
@@ -331,11 +331,16 @@ flowchart TD
   the primary trigger, exactly how the official Apple app already works (`WireGuardAdapter.swift:184-188`
   `NWPathMonitor` → `wgBumpSockets` → `api-apple.go:176-188` → `device.BindUpdate()`); WS ping is the
   backstop, not the trigger.
-- **Client masking vs wstunnel** — RESOLVED (verified, `coder/websocket` `write.go:329-335`): the
-  client role always sets `masked = true` with a random per-frame key; RFC 6455 requires clients to
-  mask and servers to accept masked frames, and wstunnel's server does. wstunnel's
-  `--websocket-mask-frame` flag governs only its **own client** (default off — non-compliant but
-  tolerated by its own server); irrelevant to us. No dedicated QA item.
+- **Client masking vs wstunnel** — FIXED (was a real defect; see plan US12). The earlier assumption
+  that "servers accept masked frames" is FALSE for a **default** wstunnel server: it runs
+  `set_auto_apply_mask(websocket_mask_frame=false)` and does NOT unmask incoming frames, forwarding the
+  still-masked (garbage) datagram, which the WireGuard endpoint drops. `coder/websocket` masks every
+  client frame with no toggle, so it cannot interoperate with a default wstunnel server; it also rejects
+  unmasked client frames server-side. The transport therefore uses `github.com/gobwas/ws`: the **client
+  sends UNMASKED by default** (matching a default wstunnel server), with an opt-in `ws_mask`
+  (`WG_WS_MASK`) mirroring wstunnel's `--websocket-mask-frame` (mask modes must match); the **server
+  accepts BOTH** masked and unmasked client frames and never masks its own. Covered by the wstunnel
+  interop manual QA and the masking regression tests.
 - **Android `VpnService.protect` upcall JNI details** — OUT OF THIS REPO'S SCOPE: they live in
   Layers B/C (the user's wireguard-android fork, `docs/ANDROID_INTEGRATION.md` §3-4). This repo's
   entire contract is the per-dial `func(fd int)` protect option (Layer A).

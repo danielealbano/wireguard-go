@@ -45,7 +45,7 @@ pinned deps). Re-verify against `proxy.golang.org` before bumping.
 | Networking | `golang.org/x/net` | IPv4/IPv6 headers, DNS message parsing. |
 | Syscalls | `golang.org/x/sys` | Per-OS socket / TUN / route control. |
 | Userspace stack | `gvisor.dev/gvisor` | `tun/netstack` in-process TCP/IP; foundation for embedding WireGuard in a process. |
-| WebSocket transport | `conn.Bind` over WebSocket | Server + client mode; tunnels the WireGuard wire protocol over WebSocket instead of UDP. |
+| WebSocket transport | `conn.Bind` over WebSocket (`github.com/gobwas/ws`) | Server + client mode; tunnels the WireGuard wire protocol over WebSocket instead of UDP. Unmasked-by-default client, opt-in `ws_mask`, accept-both server (wstunnel interop). |
 | Windows TUN | `golang.zx2c4.com/wintun` | Wintun bindings. |
 | Config protocol | in-repo UAPI (`ipc/` + `device/uapi.go`) | Cross-platform `wg(8)` protocol over a control socket / named pipe. NO config file. |
 | Logging | in-repo `device.Logger` | Leveled printf-style (`Verbose`/`Error`/`Silent`). |

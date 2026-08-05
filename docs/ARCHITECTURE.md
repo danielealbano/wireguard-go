@@ -318,6 +318,10 @@ Key properties: a per-connection write mutex serialises concurrent senders; a ne
 queue plus a `done` channel and a joined `WaitGroup` give a race- and leak-free shutdown across
 `BindUpdate` cycles; the client reconnects with DNS re-resolution and bounded per-endpoint backoff,
 with WebSocket ping as a dead-connection backstop; the server rebinds a reconnecting peer via
-`SetEndpointFromPacket` and gates upgrades with a constant-time bearer check. An optional Prometheus
+`SetEndpointFromPacket` and gates upgrades with a constant-time bearer check. Frame masking (built on
+`github.com/gobwas/ws`) is **unmasked by default** on the client — matching a default wstunnel server,
+which does not unmask — with an opt-in `ws_mask` (`WG_WS_MASK`) mirroring wstunnel's
+`--websocket-mask-frame`; the server **accepts both** masked and unmasked client frames and never masks
+its own. An optional Prometheus
 collector (in `metrics/`) reads device peer atomics and WebSocket-bind counters through daemon-supplied
 snapshots, so `metrics` imports neither `device` nor `conn`.
