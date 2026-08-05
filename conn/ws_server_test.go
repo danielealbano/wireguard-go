@@ -201,6 +201,77 @@ func TestWSServer_MultiClient(t *testing.T) {
 	}
 }
 
+// TestWSServer_ListenPersistsWhenSetconfOmitsWSListen locks in that ws_listen is a
+// persistent device scalar, exactly like listen_port: a later set=1 that omits it —
+// e.g. wg's full-replace setconf path, which carries replace_peers + peers but no
+// ws_listen — MUST leave the running listener untouched. A fresh client dialed AFTER
+// that replace still connecting proves the listener survived (an existing connection
+// would not, so the second client must dial anew).
+func TestWSServer_ListenPersistsWhenSetconfOmitsWSListen(t *testing.T) {
+	addr := freeLocalAddr(t)
+	listenURL := "ws://" + addr + "/wg"
+
+	serverPriv, serverPub := wgKeypair(t)
+	aPriv, aPub := wgKeypair(t)
+	bPriv, bPub := wgKeypair(t)
+
+	sbind, err := conn.NewWebSocketBind(
+		conn.WithWSRole(conn.WSRoleServer),
+		conn.WithWSListenURL(listenURL),
+		conn.WithWSPingInterval(0),
+	)
+	if err != nil {
+		t.Fatalf("server bind: %v", err)
+	}
+	stun := tuntest.NewChannelTUN()
+	sdev := device.NewDevice(stun.TUN(), sbind, device.NewLogger(device.LogLevelError, ""))
+	t.Cleanup(sdev.Close)
+	if err := sdev.IpcSet(fmt.Sprintf(
+		"private_key=%s\nws_listen=%s\npublic_key=%s\nallowed_ip=1.0.0.2/32\npublic_key=%s\nallowed_ip=1.0.0.3/32\n",
+		serverPriv, listenURL, aPub, bPub)); err != nil {
+		t.Fatalf("server IpcSet: %v", err)
+	}
+	if err := sdev.Up(); err != nil {
+		t.Fatalf("server Up: %v", err)
+	}
+
+	bringUpClient := func(priv string) *tuntest.ChannelTUN {
+		t.Helper()
+		cbind, err := conn.NewWebSocketBind(conn.WithWSRole(conn.WSRoleClient), conn.WithWSPingInterval(0))
+		if err != nil {
+			t.Fatalf("client bind: %v", err)
+		}
+		ctun := tuntest.NewChannelTUN()
+		cdev := device.NewDevice(ctun.TUN(), cbind, device.NewLogger(device.LogLevelError, ""))
+		t.Cleanup(cdev.Close)
+		if err := cdev.IpcSet(fmt.Sprintf(
+			"private_key=%s\npublic_key=%s\nendpoint=%s\npersistent_keepalive_interval=1\nallowed_ip=1.0.0.1/32\n",
+			priv, serverPub, listenURL)); err != nil {
+			t.Fatalf("client IpcSet: %v", err)
+		}
+		if err := cdev.Up(); err != nil {
+			t.Fatalf("client Up: %v", err)
+		}
+		return ctun
+	}
+
+	// Baseline: client A connects and pings through, proving the listener is up.
+	atun := bringUpClient(aPriv)
+	wsAssertPing(t, atun, stun, [4]byte{1, 0, 0, 2}, [4]byte{1, 0, 0, 1}, 10*time.Second)
+
+	// Full-replace setconf that OMITS ws_listen (mirrors wg emitting replace_peers +
+	// peers but no ws_listen). This must NOT tear the listener down.
+	if err := sdev.IpcSet(fmt.Sprintf(
+		"replace_peers=true\npublic_key=%s\nallowed_ip=1.0.0.2/32\npublic_key=%s\nallowed_ip=1.0.0.3/32\n",
+		aPub, bPub)); err != nil {
+		t.Fatalf("server replace IpcSet: %v", err)
+	}
+
+	// A NEW client dialed after the replace still connecting proves the listener persisted.
+	btun := bringUpClient(bPriv)
+	wsAssertPing(t, btun, stun, [4]byte{1, 0, 0, 3}, [4]byte{1, 0, 0, 1}, 10*time.Second)
+}
+
 func TestWSServer_BearerReject(t *testing.T) {
 	// Matching bearer: tunnel works.
 	ok := newWSServerTunnel(t, 1, "s3cret", "s3cret")
