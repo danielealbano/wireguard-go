@@ -1715,7 +1715,10 @@ func wsPeerAddr(r *http.Request) netip.AddrPort {
 }
 
 func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound chan wsInbound, done <-chan struct{}) ([]ReceiveFunc, uint16, error) {
-	u, err := url.Parse(b.cfg.listenURL)
+	// openServer runs under b.mu (via Open), so this read is synchronized with
+	// SetWSListen; capture a local so the serve goroutine never touches the field.
+	listenURL := b.cfg.listenURL
+	u, err := url.Parse(listenURL)
 	if err != nil {
 		return nil, 0, err
 	}
