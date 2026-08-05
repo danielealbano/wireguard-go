@@ -5,11 +5,15 @@
 
 package conn
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
-// pingLoop pings the connection every cfg.pingInterval; on failure it cancels the
-// connection, which unblocks its read loop and makes the next Send re-dial. It exits
-// when the per-connection ctx is cancelled (drop or bind Close). It records the RTT.
+// pingLoop pings the connection every cfg.pingInterval; each ping is bounded by a
+// timeout so a silent/half-open peer (no pong) is detected. On failure it cancels
+// the connection, which unblocks its read loop and makes the next Send re-dial. It
+// exits when the per-connection ctx is cancelled (drop or bind Close). It records RTT.
 func (b *WebSocketBind) pingLoop(c *wsClientConn) {
 	if b.cfg.pingInterval <= 0 {
 		return
@@ -22,8 +26,14 @@ func (b *WebSocketBind) pingLoop(c *wsClientConn) {
 			return
 		case <-t.C:
 			start := time.Now()
-			if err := c.conn.Ping(c.ctx); err != nil {
-				c.cancel() // triggers read-loop exit + reconnect
+			pingCtx, cancel := context.WithTimeout(c.ctx, b.cfg.pingInterval)
+			err := c.conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				if c.ctx.Err() == nil { // a real ping failure/timeout, not a bind close
+					b.cfg.logger.verbosef("websocket ping to %s failed, will reconnect: %v", c.ep.DstToString(), err)
+					c.cancel() // triggers read-loop exit + reconnect
+				}
 				return
 			}
 			b.metrics.observeRTT(c.ep.DstToString(), time.Since(start).Seconds())
