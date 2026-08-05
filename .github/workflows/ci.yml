@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+      - run: go build ./...
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.12.2
+      - run: go test -race ./...
+      - run: go mod tidy && git diff --exit-code go.mod go.sum
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  mermaid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: ./scripts/mermaid-check.sh docs
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+      - run: |
+          for arch in arm64 arm amd64; do
+            GOOS=android GOARCH=$arch CGO_ENABLED=0 go build ./...
+          done
+
+  darwin:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+      - run: CGO_ENABLED=1 go build ./...
