@@ -22,10 +22,40 @@ wireguard-go: $(wildcard *.go) $(wildcard */*.go)
 install: wireguard-go
 	@install -v -d "$(DESTDIR)$(BINDIR)" && install -v -m 0755 "$<" "$(DESTDIR)$(BINDIR)/wireguard-go"
 
+vet:
+	go vet ./...
+
+lint:
+	golangci-lint run
+
+lint-fix:
+	golangci-lint run --fix
+
 test:
-	go test ./...
+	go test -race ./...
+
+test-e2e: wireguard-go
+	./tests/netns.sh ./wireguard-go
+
+test-all: test test-e2e
+
+tidy:
+	go mod tidy
+
+vulncheck:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+mermaid-check:
+	./scripts/mermaid-check.sh docs
+
+snapshot:
+	goreleaser release --snapshot --clean
+
+release:
+	goreleaser release --clean
 
 clean:
 	rm -f wireguard-go
 
-.PHONY: all clean test install generate-version-and-build
+.PHONY: all clean test test-e2e test-all install generate-version-and-build \
+	vet lint lint-fix tidy vulncheck mermaid-check snapshot release
