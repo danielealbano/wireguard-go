@@ -42,13 +42,21 @@ func newUDPDevicePair(t *testing.T) (a, b *tuntest.ChannelTUN) {
 	tb, db := mk(priv2)
 	portA := listenPortOf(t, da)
 	portB := listenPortOf(t, db)
+	// No persistent keepalive here. Both binds are already up, so turning keepalive on
+	// makes each peer fire a handshake initiation the instant it is added; the two
+	// initiations then cross on the wire (glare). Each side overwrites its own initiator
+	// state when it consumes the peer's crossing initiation, so neither response is
+	// accepted and the session only forms on the RekeyTimeout (5s) retransmit — making
+	// this handshake test pay a fixed ~5s and flake near any budget just above it.
+	// Letting the ping (wsAssertPing) drive a single one-directional initiation avoids
+	// the glare entirely, so the handshake completes on the first exchange.
 	if err := da.IpcSet(fmt.Sprintf(
-		"public_key=%s\nendpoint=127.0.0.1:%d\npersistent_keepalive_interval=1\nallowed_ip=1.0.0.2/32\n",
+		"public_key=%s\nendpoint=127.0.0.1:%d\nallowed_ip=1.0.0.2/32\n",
 		pub2, portB)); err != nil {
 		t.Fatalf("peer A: %v", err)
 	}
 	if err := db.IpcSet(fmt.Sprintf(
-		"public_key=%s\nendpoint=127.0.0.1:%d\npersistent_keepalive_interval=1\nallowed_ip=1.0.0.1/32\n",
+		"public_key=%s\nendpoint=127.0.0.1:%d\nallowed_ip=1.0.0.1/32\n",
 		pub1, portA)); err != nil {
 		t.Fatalf("peer B: %v", err)
 	}
