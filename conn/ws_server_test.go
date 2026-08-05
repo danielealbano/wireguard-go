@@ -305,3 +305,24 @@ func TestWSServer_BearerNotLogged(t *testing.T) {
 		t.Errorf("server bearer leaked into logs:\n%s", logged)
 	}
 }
+
+func TestWSServer_OpenCloseStress(t *testing.T) {
+	addr := freeLocalAddr(t)
+	b, err := conn.NewWebSocketBind(
+		conn.WithWSRole(conn.WSRoleServer),
+		conn.WithWSListenURL("ws://"+addr+"/wg"),
+	)
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	// Tight Open/Close cycles (no settle sleep) exercise the serve-goroutine vs
+	// Close window that a BindUpdate performs; must be race-clean and panic-free.
+	for i := 0; i < 50; i++ {
+		if _, _, err := b.Open(0); err != nil {
+			t.Fatalf("Open %d: %v", i, err)
+		}
+		if err := b.Close(); err != nil {
+			t.Fatalf("Close %d: %v", i, err)
+		}
+	}
+}

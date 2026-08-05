@@ -55,18 +55,28 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 		}()
 		b.serverReadLoop(sc, &WSEndpoint{dst: dst, connID: id}, inbound, done)
 	})
-	b.srv = &http.Server{Handler: mux}
+	srv := &http.Server{Handler: mux}
+	if b.cfg.tlsServer != nil {
+		srv.TLSConfig = b.cfg.tlsServer // certs come from tlsServer
+	}
+	b.srv = srv // stored under b.mu (Open); Close reads it under b.mu to shut down
 	ln, err := net.Listen("tcp", u.Host)
 	if err != nil {
 		return nil, 0, err
 	}
+	// The serve goroutine references only the srv/ln locals — never the b.srv field —
+	// so Close nil-ing b.srv cannot race with it. It is tracked on readWG so Close's
+	// Wait() joins it: srv.Close() makes Serve return and release the listener, so the
+	// port is free before Close returns (required for a BindUpdate re-Open on the same
+	// listen address). Add is under b.mu (Open) with the closed check, like the others.
+	b.readWG.Add(1)
 	go func() {
+		defer b.readWG.Done()
 		var serveErr error
 		if b.cfg.tlsServer != nil {
-			b.srv.TLSConfig = b.cfg.tlsServer
-			serveErr = b.srv.ServeTLS(ln, "", "") // certs come from tlsServer
+			serveErr = srv.ServeTLS(ln, "", "")
 		} else {
-			serveErr = b.srv.Serve(ln)
+			serveErr = srv.Serve(ln)
 		}
 		if serveErr != nil && serveErr != http.ErrServerClosed {
 			b.cfg.logger.errorf("websocket server on %s stopped: %v", listenURL, serveErr)
