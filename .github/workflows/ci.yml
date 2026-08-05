@@ -38,9 +38,13 @@ jobs:
       - uses: actions/setup-go@v7.0.0
         with:
           go-version: stable
+      # Android consumes this repo as a Go module (no standalone daemon; D18), so
+      # compile-check the library packages. The root main package is excluded: an
+      # android executable requires external cgo linking, which is out of scope here.
       - run: |
+          pkgs=$(go list ./... | grep -v '^golang.zx2c4.com/wireguard$')
           for arch in arm64 arm amd64; do
-            GOOS=android GOARCH=$arch CGO_ENABLED=0 go build ./...
+            GOOS=android GOARCH=$arch CGO_ENABLED=0 go build $pkgs
           done
 
   darwin:
