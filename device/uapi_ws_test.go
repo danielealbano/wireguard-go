@@ -21,7 +21,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 )
 
-type wsCall struct{ url, mode, target, bearer string }
+type wsCall struct{ url, mode, wstunnelTarget, bearer string }
 
 // mockWSBind implements conn.Bind + conn.WebSocketBinder, recording the peer
 // endpoint parse calls so tests can assert per-peer WS key isolation.
@@ -41,9 +41,9 @@ func (m *mockWSBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 	return m.ParseWSPeerEndpoint(s, "standard", "", "")
 }
 
-func (m *mockWSBind) ParseWSPeerEndpoint(url, mode, target, bearer string) (conn.Endpoint, error) {
+func (m *mockWSBind) ParseWSPeerEndpoint(url, mode, wstunnelTarget, bearer string) (conn.Endpoint, error) {
 	m.mu.Lock()
-	m.calls = append(m.calls, wsCall{url, mode, target, bearer})
+	m.calls = append(m.calls, wsCall{url, mode, wstunnelTarget, bearer})
 	m.mu.Unlock()
 	return mockWSEndpoint(url), nil
 }
@@ -83,7 +83,7 @@ func TestUAPI_WSKeys_Accepted(t *testing.T) {
 		"public_key=" + randKeyHex(t) + "\n" +
 		"endpoint=wss://server.example.com/wg\n" +
 		"ws_mode=wstunnel\n" +
-		"ws_target=10.0.0.9:51820\n" +
+		"wstunnel_target=10.0.0.9:51820\n" +
 		"ws_bearer=coarse-gate\n"
 	if err := dev.IpcSet(cfg); err != nil {
 		t.Fatalf("IpcSet with WS keys: %v", err)
@@ -156,7 +156,7 @@ func TestUAPI_WSKeys_NotLeakedAcrossPeers(t *testing.T) {
 		"public_key=" + randKeyHex(t) + "\n" +
 		"endpoint=ws://h/1\n" +
 		"ws_mode=wstunnel\n" +
-		"ws_target=1.2.3.4:5\n" +
+		"wstunnel_target=1.2.3.4:5\n" +
 		"ws_bearer=peer1-secret\n" +
 		"public_key=" + randKeyHex(t) + "\n" +
 		"endpoint=ws://h/2\n"
@@ -169,7 +169,7 @@ func TestUAPI_WSKeys_NotLeakedAcrossPeers(t *testing.T) {
 		t.Fatalf("got %d parse calls, want 2: %+v", len(bind.calls), bind.calls)
 	}
 	p2 := bind.calls[1]
-	if p2.mode != "" || p2.target != "" || p2.bearer != "" {
+	if p2.mode != "" || p2.wstunnelTarget != "" || p2.bearer != "" {
 		t.Errorf("peer 2 inherited WS keys from peer 1: %+v", p2)
 	}
 }
@@ -196,16 +196,16 @@ func TestUAPI_Get_EmitsWSPeerKeys(t *testing.T) {
 			name:       "standard mode omits target and bearer",
 			peerCfg:    "endpoint=wss://server.example.com/wg\n",
 			wantLines:  []string{"endpoint=wss://server.example.com/wg", "ws_mode=standard"},
-			absentKeys: []string{"ws_target=", "ws_bearer="},
+			absentKeys: []string{"wstunnel_target=", "ws_bearer="},
 		},
 		{
 			name: "wstunnel mode with target and bearer",
 			peerCfg: "endpoint=wss://relay.example.com:8443\n" +
-				"ws_mode=wstunnel\nws_target=10.0.0.9:51820\nws_bearer=tok\n",
+				"ws_mode=wstunnel\nwstunnel_target=10.0.0.9:51820\nws_bearer=tok\n",
 			wantLines: []string{
 				"endpoint=wss://relay.example.com:8443",
 				"ws_mode=wstunnel",
-				"ws_target=10.0.0.9:51820",
+				"wstunnel_target=10.0.0.9:51820",
 				"ws_bearer=tok",
 			},
 		},
@@ -277,7 +277,7 @@ func TestUAPI_Get_WSKeys_RoundTrip(t *testing.T) {
 	dev1 := newRealWSClientDevice(t)
 	cfg := "private_key=" + randKeyHex(t) + "\npublic_key=" + randKeyHex(t) + "\n" +
 		"endpoint=wss://relay.example.com:8443\n" +
-		"ws_mode=wstunnel\nws_target=10.0.0.9:51820\nws_bearer=tok\n" +
+		"ws_mode=wstunnel\nwstunnel_target=10.0.0.9:51820\nws_bearer=tok\n" +
 		"allowed_ip=1.0.0.0/24\n"
 	if err := dev1.IpcSet(cfg); err != nil {
 		t.Fatalf("dev1 IpcSet: %v", err)
@@ -290,7 +290,7 @@ func TestUAPI_Get_WSKeys_RoundTrip(t *testing.T) {
 	// Keep only keys the set operation accepts (drops get-only fields like tx_bytes).
 	allow := map[string]bool{
 		"private_key": true, "public_key": true, "endpoint": true,
-		"ws_mode": true, "ws_target": true, "ws_bearer": true,
+		"ws_mode": true, "wstunnel_target": true, "ws_bearer": true,
 		"allowed_ip": true, "persistent_keepalive_interval": true,
 	}
 	var sb strings.Builder
@@ -312,7 +312,7 @@ func TestUAPI_Get_WSKeys_RoundTrip(t *testing.T) {
 	wsLines := func(s string) []string {
 		var out []string
 		for _, l := range strings.Split(s, "\n") {
-			if strings.HasPrefix(l, "ws_") || strings.HasPrefix(l, "endpoint=") {
+			if strings.HasPrefix(l, "ws_") || strings.HasPrefix(l, "wstunnel_target=") || strings.HasPrefix(l, "endpoint=") {
 				out = append(out, l)
 			}
 		}

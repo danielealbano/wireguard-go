@@ -75,7 +75,7 @@ type wsBackoff struct {
 // WebSocket specifics out of the device core.
 type WebSocketBinder interface {
 	SetWSListen(rawURL string) error
-	ParseWSPeerEndpoint(rawURL, mode, target, bearer string) (Endpoint, error)
+	ParseWSPeerEndpoint(rawURL, mode, wstunnelTarget, bearer string) (Endpoint, error)
 }
 
 var (
@@ -104,7 +104,7 @@ func (b *WebSocketBind) ParseEndpoint(s string) (Endpoint, error) {
 	return b.ParseWSPeerEndpoint(s, "standard", "", "")
 }
 
-func (b *WebSocketBind) ParseWSPeerEndpoint(rawURL, mode, target, bearer string) (Endpoint, error) {
+func (b *WebSocketBind) ParseWSPeerEndpoint(rawURL, mode, wstunnelTarget, bearer string) (Endpoint, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid websocket endpoint %q: %w", rawURL, err)
@@ -112,14 +112,14 @@ func (b *WebSocketBind) ParseWSPeerEndpoint(rawURL, mode, target, bearer string)
 	if u.Scheme != "ws" && u.Scheme != "wss" {
 		return nil, fmt.Errorf("invalid websocket endpoint %q: scheme must be ws or wss", rawURL)
 	}
-	e := &WSEndpoint{url: rawURL, target: target, bearer: bearer}
+	e := &WSEndpoint{url: rawURL, wstunnelTarget: wstunnelTarget, bearer: bearer}
 	switch mode {
 	case "", "standard":
 		e.dialect = wsDialectStandard
 	case "wstunnel":
 		e.dialect = wsDialectWstunnel
-		if target == "" {
-			return nil, fmt.Errorf("ws_mode=wstunnel requires ws_target")
+		if wstunnelTarget == "" {
+			return nil, fmt.Errorf("ws_mode=wstunnel requires wstunnel_target")
 		}
 	default:
 		return nil, fmt.Errorf("invalid ws_mode %q", mode)

@@ -125,7 +125,7 @@ directives. `wg(8)` is the normal front-end.
 
 The WebSocket transport adds these **additive** UAPI keys (accepted only when `WG_TRANSPORT=ws`):
 the device key `ws_listen` (server listen URL) and the per-peer keys `ws_mode` (`standard`|`wstunnel`),
-`ws_target` (real WireGuard `host:port` for `wstunnel` mode), and `ws_bearer` (per-peer client bearer).
+`wstunnel_target` (real WireGuard `host:port` for `wstunnel` mode), and `ws_bearer` (per-peer client bearer).
 `get=1` round-trips all four; `ws_bearer` is echoed over the trusted local UAPI socket (like
 `private_key`/`preshared_key`) but is never logged. Peer `endpoint` values may be `ws(s)://host:port/path` URLs.
 

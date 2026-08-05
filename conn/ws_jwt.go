@@ -40,14 +40,14 @@ func wsRandomSecret() []byte {
 
 // wstunnelJWT builds the HS256 token. The wstunnel server does NOT verify the
 // signature, but the token must be a well-formed HS256 JWT — golang-jwt guarantees that.
-func wstunnelJWT(target string, secret []byte) (string, error) {
-	host, portStr, err := net.SplitHostPort(target)
+func wstunnelJWT(wstunnelTarget string, secret []byte) (string, error) {
+	host, portStr, err := net.SplitHostPort(wstunnelTarget)
 	if err != nil {
-		return "", fmt.Errorf("ws_target %q: %w", target, err)
+		return "", fmt.Errorf("wstunnel_target %q: %w", wstunnelTarget, err)
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return "", fmt.Errorf("ws_target port %q: %w", portStr, err)
+		return "", fmt.Errorf("wstunnel_target port %q: %w", portStr, err)
 	}
 	claims := wstunnelClaims{ID: uuid.NewString(), R: host, RP: port}
 	// claims.P.Udp.Timeout stays nil => JSON null.

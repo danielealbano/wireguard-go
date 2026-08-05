@@ -74,7 +74,7 @@ Key facts:
    sanctioned mechanism, hence a callback rather than `SO_MARK`.
 
 2. **All WS config must travel in the UAPI settings string.** Because Android passes only the
-   `toWgUserspaceString()` blob and no flags/env, the transport selection, `ws_mode`, `ws_target`,
+   `toWgUserspaceString()` blob and no flags/env, the transport selection, `ws_mode`, `wstunnel_target`,
    `ws_bearer`, and any TLS options must be expressible as **UAPI keys** (the "embedder-supplied on
    mobile" branch of `docs/WORK_PLAN.md` D17) or as new `wgTurnOn` parameters. On desktop these live
    at process level; on Android they cannot.
@@ -95,7 +95,7 @@ Everything in this layer already exists in-repo; the symbols below are the contr
   ([conn/ws_config.go](../conn/ws_config.go)) and invokes it inside `net.Dialer.Control` for **every**
   dialed socket, before use (the per-OS `conn/ws_pinning_{linux,darwin,default}.go`). This is the sole
   new cross-language contract Android needs.
-- **WS config via UAPI.** The additive keys (`ws_listen`, URL `endpoint`, `ws_mode`, `ws_target`,
+- **WS config via UAPI.** The additive keys (`ws_listen`, URL `endpoint`, `ws_mode`, `wstunnel_target`,
   `ws_bearer`) parse from the settings string in [device/uapi.go](../device/uapi.go), the only channel
   Android has.
 - **The WS bind does not implement `conn.PeekLookAtSocketFd`.** With no single persistent socket,
@@ -170,7 +170,7 @@ of pull (Java→Go, once).
 | `WG_TRANSPORT` (env/flag) | UAPI device key in the settings string, or a `wgTurnOn` param |
 | TLS material (files/flags) | UAPI keys / `wgTurnOn` params; a mobile **client** usually needs only system roots + `servername` |
 | `ws_ping_interval`, backoff (flags) | UAPI device keys (sane defaults if omitted) |
-| `ws_listen`, `endpoint` URL, `ws_mode`, `ws_target`, `ws_bearer` (UAPI) | unchanged — already UAPI |
+| `ws_listen`, `endpoint` URL, `ws_mode`, `wstunnel_target`, `ws_bearer` (UAPI) | unchanged — already UAPI |
 
 Everything funnels through `config.toWgUserspaceString()` → `wgTurnOn(settings)` → `IpcSet`.
 

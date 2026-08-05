@@ -170,7 +170,7 @@ func newWSClientDevice(t *testing.T, selfPriv, peerPub, endpoint, target string,
 	}
 	d := device.NewDevice(tdev.TUN(), bind, device.NewLogger(device.LogLevelError, ""))
 	cfg := fmt.Sprintf(
-		"private_key=%s\npublic_key=%s\nendpoint=%s\nws_mode=wstunnel\nws_target=%s\nallowed_ip=1.0.0.2/32\npersistent_keepalive_interval=1\n",
+		"private_key=%s\npublic_key=%s\nendpoint=%s\nws_mode=wstunnel\nwstunnel_target=%s\nallowed_ip=1.0.0.2/32\npersistent_keepalive_interval=1\n",
 		selfPriv, peerPub, endpoint, target)
 	if err := d.IpcSet(cfg); err != nil {
 		t.Fatalf("client IpcSet: %v", err)

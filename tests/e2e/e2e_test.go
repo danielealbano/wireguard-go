@@ -100,7 +100,7 @@ func runWstunnelE2E(t *testing.T, masked bool) {
 
 	// wg WebSocket client in wstunnel mode through the real wstunnel.
 	wgC := l.startDaemon(nsC, clientEnv)
-	l.uapiSet(wgC, fmt.Sprintf("private_key=%s\npublic_key=%s\nendpoint=ws://10.9.0.3:8080/v1\nws_mode=wstunnel\nws_target=10.9.0.2:51820\nallowed_ip=10.10.0.2/32\npersistent_keepalive_interval=1\n", privC, pubS))
+	l.uapiSet(wgC, fmt.Sprintf("private_key=%s\npublic_key=%s\nendpoint=ws://10.9.0.3:8080/v1\nws_mode=wstunnel\nwstunnel_target=10.9.0.2:51820\nallowed_ip=10.10.0.2/32\npersistent_keepalive_interval=1\n", privC, pubS))
 	l.ifup(nsC, wgC, "10.10.0.1/24")
 
 	if !l.ping(nsC, "10.10.0.2") {
