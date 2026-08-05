@@ -2,6 +2,23 @@
 
 This is an implementation of WireGuard in Go.
 
+> ## ⚠️ This is a fork — WebSocket / wstunnel transport
+>
+> This repository is a **fork of upstream [wireguard-go](https://git.zx2c4.com/wireguard-go)** that adds an
+> optional **WebSocket transport** (client *and* server), including **[wstunnel](https://github.com/erebe/wstunnel)**
+> interoperability, so the WireGuard wire protocol can be tunnelled over `ws://` / `wss://` instead of UDP —
+> useful where UDP is blocked or only HTTP(S) egress is available. It also adds an optional **Prometheus
+> metrics** endpoint and **multi-platform release packaging** (binaries + a container image).
+>
+> **The default behaviour is unchanged.** Without `WG_TRANSPORT=ws` this is the stock UDP wireguard-go; the
+> WireGuard wire protocol, handshake, and the `wg(8)` UAPI are untouched.
+>
+> - **Configuration of the new settings → [docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
+> - Design & internals → [docs/PROJECT.md](docs/PROJECT.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+>
+> Note: stock `wg(8)` / `wg-quick(8)` do not yet understand the WebSocket settings (a `wss://` endpoint and
+> the `ws_*` keys), so today they are configured directly over the UAPI socket — see the configuration doc.
+
 ## Usage
 
 Most Linux kernel WireGuard users are used to adding an interface with `ip link add wg0 type wireguard`. With wireguard-go, instead simply run:
