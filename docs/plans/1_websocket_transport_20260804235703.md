@@ -2720,10 +2720,10 @@ up (pipeline requires the last item to verify the whole plan). Depends on: US1�
 
 **US11 DoD:** docs current; all gates green; all platforms compile; Mermaid valid; invariants hold.
 
-> **NOTE:** US11's ground-up check (Task 11.2) reflected the original `coder/websocket` build. US12 is a
-> later increment that replaces the WS library; the plan's authoritative final ground-up gate is now
-> **US12 Task 12.8**, which re-runs the full quality gates and cross-platform matrix over the gobwas-based
-> final state.
+> **NOTE:** US11's ground-up check (Task 11.2) reflected the original `coder/websocket` build; US12 (Task
+> 12.8) re-verified the gobwas-based state. The plan's authoritative final ground-up gate is now **US13
+> Task 13.7** (the latest increment), which re-runs the full quality gates and cross-platform matrix over
+> the final state including the new tests.
 
 ---
 
@@ -3370,6 +3370,610 @@ func newWSMaskProbe(t *testing.T) (url string, masked <-chan bool) {
 guard pre-allocation; ping/pong backstop preserved; all native tests + new masking tests green with
 `-race`; all GOOS compile; `coder/websocket` fully removed; canonical docs corrected; manual QA confirms
 real-wstunnel interop.
+
+---
+
+## [ ] US13 — Test coverage: UDP in-process tunnel, in-process wstunnel integration, Go netns e2e (P13)
+
+**Why:** The automated suite fakes the network and only exercised standard-WS mode, so it never spoke real
+wstunnel and never moved a packet through a real TUN — which is why the masking (US12) and `/v1/events`
+prefix defects reached manual QA. US13 closes that: a UDP twin of the WS tunnel test, an in-process
+**fake wstunnel** integration test that reproduces both bug classes, and a **Go-driven netns e2e** (real
+daemon, real TUN) covering UDP / WS / wstunnel — replacing `tests/netns.sh` — wired into CI in parallel.
+Depends on: US1–US12.
+
+**Design (agreed with the user):**
+- **Tier 1 — in-process, no root, all GOOS** (carried by the existing CI `quality` job + the `darwin` job):
+  (a) a **UDP tunnel test** — two devices over real loopback UDP (the `ws_tunnel_test` twin); (b) an
+  **in-process fake wstunnel relay** (accepts only `/v1/events`, decodes the JWT for the UDP target, and
+  **does NOT unmask by default** — mirroring wstunnel's `auto_apply_mask=false`) driving a client in
+  wstunnel mode → fake → real UDP wg server, with positive + negative controls that reproduce the masking
+  and prefix defects as guards.
+- **Tier 2 — e2e, Linux only, root, netns** (`tests/e2e/`, `//go:build linux && e2e`, `t.Skip` off-Linux/
+  non-root): a Go test shelling out to `ip`/`unshare` that runs the real `wireguard-go` binary per
+  namespace, configures it via the UAPI socket, and asserts **handshake + ping** across **UDP / WS
+  (self-signed wss) / wstunnel (real v10.6.2 binary, plain ws, pinned + checksummed)**. `tests/netns.sh`
+  is deleted.
+- **macOS:** compile-only for e2e; the `darwin` CI job additionally runs the full `go test -race ./...`
+  (Tier-1, incl. darwin-tagged pinning/path-monitor tests) — the achievable macOS runtime coverage.
+- **CI:** all jobs parallel (no `needs:`). New privileged `e2e` job (ubuntu) downloads + checksum-verifies
+  wstunnel and runs `make test-e2e`.
+
+**Acceptance criteria:**
+- [ ] `conn` has a real-UDP two-device tunnel test (handshake + ping) analogous to `ws_tunnel_test.go`.
+- [ ] `conn` has an in-process wstunnel-mode integration test: unmasked-default client handshakes through a
+      fake default wstunnel; a masked client against that same fake does NOT (regression guard for US12);
+      a masked client against a `--websocket-mask-frame` fake DOES; the default (pathless) endpoint targets
+      `/v1/events`.
+- [ ] `tests/e2e/` runs the real daemon over netns for UDP, WS (wss), and wstunnel (real binary), asserting
+      handshake + ping; skips cleanly when not Linux+root.
+- [ ] `tests/netns.sh` is removed; `make test-e2e` runs the Go e2e; `darwin` CI job runs the test suite.
+- [ ] CI has a parallel privileged `e2e` job; every CI job runs in parallel (no `needs:`).
+- [ ] All quality gates pass; the e2e package compiles for `GOOS=linux` under `-tags=e2e`.
+
+### [ ] Task 13.1 — Tier-1: real-UDP in-process tunnel test
+- [ ] **Action 13.1.1** — create `conn/udp_tunnel_test.go` (`package conn_test`) with a `newUDPDevicePair`
+  helper (the UDP analogue of `newWSDevicePair`) and the tunnel test. Two devices on real loopback UDP
+  binds; `Open(0)` returns each actual port; cross-configure endpoints; assert a ping transits both ways
+  via `wsAssertPing` (reused from `ws_testhelpers_test.go`).
+
+```go
+package conn_test
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/device"
+	"golang.zx2c4.com/wireguard/tun/tuntest"
+)
+
+// newUDPDevicePair brings up two WireGuard devices on real loopback UDP binds
+// (conn.NewDefaultBind), cross-configured so they tunnel over UDP — the UDP analogue
+// of newWSDevicePair. Each bind's actual port is read back from Open via the device's
+// listen-port after Up, so the peers can point at each other.
+func newUDPDevicePair(t *testing.T) (a, b *tuntest.ChannelTUN) {
+	t.Helper()
+	priv1, pub1 := wgKeypair(t)
+	priv2, pub2 := wgKeypair(t)
+
+	mk := func(selfPriv string, listenPort int) (*tuntest.ChannelTUN, *device.Device) {
+		tdev := tuntest.NewChannelTUN()
+		d := device.NewDevice(tdev.TUN(), conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, ""))
+		if err := d.IpcSet(fmt.Sprintf("private_key=%s\nlisten_port=%d\n", selfPriv, listenPort)); err != nil {
+			t.Fatalf("IpcSet: %v", err)
+		}
+		if err := d.Up(); err != nil {
+			t.Fatalf("Up: %v", err)
+		}
+		t.Cleanup(d.Close)
+		return tdev, d
+	}
+	// Bring both up on OS-chosen ports, read them back, then wire peers to each port.
+	ta, da := mk(priv1, 0)
+	tb, db := mk(priv2, 0)
+	portA := listenPortOf(t, da)
+	portB := listenPortOf(t, db)
+	if err := da.IpcSet(fmt.Sprintf(
+		"public_key=%s\nendpoint=127.0.0.1:%d\npersistent_keepalive_interval=1\nallowed_ip=1.0.0.2/32\n",
+		pub2, portB)); err != nil {
+		t.Fatalf("peer A: %v", err)
+	}
+	if err := db.IpcSet(fmt.Sprintf(
+		"public_key=%s\nendpoint=127.0.0.1:%d\npersistent_keepalive_interval=1\nallowed_ip=1.0.0.1/32\n",
+		pub1, portA)); err != nil {
+		t.Fatalf("peer B: %v", err)
+	}
+	return ta, tb
+}
+
+// listenPortOf reads the actual UDP listen port from IpcGet after Up (Open(0) chose it).
+func listenPortOf(t *testing.T, d *device.Device) int {
+	t.Helper()
+	g, err := d.IpcGet()
+	if err != nil {
+		t.Fatalf("IpcGet: %v", err)
+	}
+	for _, l := range splitLines(g) {
+		if v, ok := cutPrefix(l, "listen_port="); ok {
+			return atoi(t, v)
+		}
+	}
+	t.Fatal("no listen_port in IpcGet")
+	return 0
+}
+```
+
+  - `splitLines`/`cutPrefix`/`atoi` are tiny local helpers (or use `strings.Split`/`strings.CutPrefix`/
+    `strconv.Atoi` inline — implementer's choice; keep imports honest).
+- [ ] **Action 13.1.2** — add the UDP tunnel test (compressed format).
+
+| Test | Wiring | Asserts |
+|---|---|---|
+| `TestUDPClient_Handshake` | `newUDPDevicePair` — two devices on real loopback UDP binds | a ping transits both ways (`wsAssertPing` A→B and B→A) |
+
+### [ ] Task 13.2 — Tier-1: in-process fake wstunnel + wstunnel-mode integration
+- [ ] **Action 13.2.1** — create `conn/wstunnel_relay_test.go` (`package conn_test`) with the fake wstunnel
+  relay (foundational shared harness — shown IN FULL per §3). It accepts the WS upgrade **only at
+  `/v1/events`** (a wrong prefix ⇒ 404), decodes the UDP target from the JWT in the `Sec-WebSocket-Protocol`
+  header, and relays WS binary frames ⇄ a UDP socket to that target. It **unmasks client frames only when
+  `unmask` is true** (default `false` mirrors a stock wstunnel's `auto_apply_mask=false`), so a masked
+  client against the default produces garbage downstream — the real interop contract.
+
+```go
+package conn_test
+
+import (
+	"bufio"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/gobwas/ws"
+)
+
+// fakeWstunnel is an in-process stand-in for a default wstunnel server. unmask=false
+// (default) mirrors wstunnel's auto_apply_mask=false: it does NOT unmask client frames.
+type fakeWstunnel struct {
+	srv    *httptest.Server
+	unmask bool
+}
+
+func newFakeWstunnel(t *testing.T, unmask bool) *fakeWstunnel {
+	t.Helper()
+	f := &fakeWstunnel{unmask: unmask}
+	mux := http.NewServeMux() // only /v1/events is served; any other path => 404
+	mux.HandleFunc("/v1/events", func(w http.ResponseWriter, r *http.Request) {
+		target, err := targetFromWstunnelSubproto(r.Header.Get("Sec-WebSocket-Protocol"))
+		if err != nil {
+			http.Error(w, "bad token", http.StatusBadRequest)
+			return
+		}
+		c, rw, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			return
+		}
+		f.relay(c, rw.Reader, target)
+	})
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeWstunnel) url() string { return "ws" + strings.TrimPrefix(f.srv.URL, "http") }
+
+// targetFromWstunnelSubproto pulls r:rp out of the "v1, authorization.bearer.<jwt>"
+// subprotocol by base64-decoding the JWT payload segment (no signature check, like wstunnel).
+func targetFromWstunnelSubproto(h string) (string, error) {
+	const p = "authorization.bearer."
+	i := strings.Index(h, p)
+	if i < 0 {
+		return "", errors.New("no bearer subprotocol")
+	}
+	tok := strings.TrimSpace(h[i+len(p):])
+	seg := strings.Split(tok, ".")
+	if len(seg) != 3 {
+		return "", errors.New("malformed jwt")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(seg[1])
+	if err != nil {
+		return "", err
+	}
+	var claims struct {
+		R  string `json:"r"`
+		RP int    `json:"rp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", err
+	}
+	if claims.R == "" || claims.RP == 0 {
+		return "", errors.New("empty r/rp")
+	}
+	return fmt.Sprintf("%s:%d", claims.R, claims.RP), nil
+}
+
+func (f *fakeWstunnel) relay(c net.Conn, br *bufio.Reader, target string) {
+	defer c.Close()
+	uc, err := net.Dial("udp", target)
+	if err != nil {
+		return
+	}
+	defer uc.Close()
+	var wmu sync.Mutex
+	writeWS := func(op ws.OpCode, p []byte) error {
+		wmu.Lock()
+		defer wmu.Unlock()
+		return ws.WriteFrame(c, ws.NewFrame(op, true, p))
+	}
+	go func() { // UDP -> WS (server frames are always unmasked)
+		buf := make([]byte, 1<<16)
+		for {
+			n, err := uc.Read(buf)
+			if err != nil {
+				return
+			}
+			if writeWS(ws.OpBinary, buf[:n]) != nil {
+				return
+			}
+		}
+	}()
+	for { // WS -> UDP
+		h, err := ws.ReadHeader(br)
+		if err != nil || h.Length > 1<<16 {
+			return
+		}
+		p := make([]byte, h.Length)
+		if _, err := io.ReadFull(br, p); err != nil {
+			return
+		}
+		if h.Masked && f.unmask { // default (unmask=false) forwards masked bytes AS-IS
+			ws.Cipher(p, h.Mask, 0)
+		}
+		switch h.OpCode {
+		case ws.OpBinary:
+			if _, err := uc.Write(p); err != nil {
+				return
+			}
+		case ws.OpPing:
+			if writeWS(ws.OpPong, p) != nil {
+				return
+			}
+		case ws.OpClose:
+			return
+		}
+	}
+}
+```
+
+- [ ] **Action 13.2.2** — add the wstunnel-mode integration tests (compressed format). They reuse
+  `wgKeypair`, `wsAssertPing`, and a small `newUDPServerDevice` helper (a `device.Device` on a
+  `conn.NewDefaultBind()` whose actual UDP port is read back via `listenPortOf`), and a `newWSClientDevice`
+  helper (a `device.Device` on a `conn.NewWebSocketBind(client, opts…)` configured in wstunnel mode with
+  `endpoint`=fake URL and `ws_target`=`127.0.0.1:<udp port>`). `wsAssertPingFails` is a small negative
+  helper asserting a ping does NOT transit within a short window.
+
+| Test | Wiring | Asserts |
+|---|---|---|
+| `TestWstunnelMode_UnmaskedDefault_Handshake` | client(default) → `fakeWstunnel(unmask:false)` → udp server | ping transits (unmasked-default interops with a stock wstunnel) |
+| `TestWstunnelMode_MaskedVsDefaultServer_Fails` | client(`WithWSMask(true)`) → `fakeWstunnel(unmask:false)` → udp server | ping does NOT transit — regression guard for the US12 masking defect |
+| `TestWstunnelMode_MaskedVsMaskingServer_Handshake` | client(`WithWSMask(true)`) → `fakeWstunnel(unmask:true)` → udp server | ping transits (masking works when the server unmasks) |
+| `TestWstunnelMode_WrongPrefix_NoHandshake` | client with endpoint `<fake>/wrong` (→ `/wrong/events`) | ping does NOT transit (fake serves only `/v1/events`) — guards the prefix contract |
+
+### [ ] Task 13.3 — Tier-2: netns e2e harness (Linux)
+- [ ] **Action 13.3.1** — create `tests/e2e/doc.go` (NO build tag) so `go build ./...` sees a buildable
+  package on every platform:
+
+```go
+// Package e2e holds the Linux network-namespace end-to-end tests (build tag: linux && e2e).
+package e2e
+```
+
+- [ ] **Action 13.3.2** — create `tests/e2e/harness_test.go` (`//go:build linux && e2e`) — the shared netns
+  lab (shown IN FULL per §3). It shells out to `ip`/`unshare`, tracks created namespaces + spawned
+  daemons, and cleans up via `t.Cleanup`. The daemon's UAPI socket lives on the shared filesystem
+  (`/var/run/wireguard/<iface>.sock`), so the test writes config to it directly from the root namespace.
+
+```go
+//go:build linux && e2e
+
+package e2e
+
+import (
+	"bytes"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"strconv"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// requireRootLinux skips unless the test runs as root on Linux (netns needs CAP_NET_ADMIN).
+func requireRootLinux(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		t.Skip("e2e netns tests require root")
+	}
+}
+
+// wgBin is the wireguard-go binary under test, provided by the Makefile (WG_GO_BIN).
+// requireRootLinux has already passed by the time this is called, so an empty value
+// means the Makefile env was NOT preserved through sudo — FAIL loudly rather than
+// t.Skip, which would green a privileged CI job that actually ran nothing.
+func wgBin(t *testing.T) string {
+	t.Helper()
+	p := os.Getenv("WG_GO_BIN")
+	if p == "" {
+		t.Fatal("WG_GO_BIN not set (run via `make test-e2e`; env must survive sudo)")
+	}
+	return p
+}
+
+// ifaceSeq gives every daemon a unique, short (<=15 char) interface name across the
+// WHOLE test binary, so UAPI sockets on the shared filesystem never collide between
+// the sequential e2e tests.
+var ifaceSeq atomic.Int32
+
+type lab struct {
+	t     *testing.T
+	pfx   string
+	ns    []string
+	procs []*exec.Cmd
+	socks []string // UAPI socket paths to remove on cleanup (SIGKILL leaves them behind)
+}
+
+func newLab(t *testing.T) *lab {
+	requireRootLinux(t)
+	l := &lab{t: t, pfx: fmt.Sprintf("wgt%d", os.Getpid())}
+	t.Cleanup(l.cleanup)
+	return l
+}
+
+// run executes a command, failing the test on error (used for setup that must succeed).
+func (l *lab) run(name string, args ...string) {
+	l.t.Helper()
+	cmd := exec.Command(name, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		l.t.Fatalf("%s %v: %v (%s)", name, args, err, stderr.String())
+	}
+}
+
+func (l *lab) addNS(suffix string) string {
+	ns := l.pfx + suffix
+	l.run("ip", "netns", "add", ns)
+	l.ns = append(l.ns, ns)
+	return ns
+}
+
+// veth connects namespace ns to the bridge brName with address cidr (e.g. 10.9.0.1/24).
+func (l *lab) vethToBridge(ns, ifname, brName, cidr string) {
+	host := ifname + "h"
+	l.run("ip", "link", "add", ifname, "type", "veth", "peer", "name", host)
+	l.run("ip", "link", "set", ifname, "netns", ns)
+	l.run("ip", "link", "set", host, "master", brName)
+	l.run("ip", "link", "set", host, "up")
+	l.run("ip", "-n", ns, "addr", "add", cidr, "dev", ifname)
+	l.run("ip", "-n", ns, "link", "set", ifname, "up")
+	l.run("ip", "-n", ns, "link", "set", "lo", "up")
+}
+
+func (l *lab) addBridge(name string) {
+	l.run("ip", "link", "add", name, "type", "bridge")
+	l.run("ip", "link", "set", name, "up")
+	l.t.Cleanup(func() { _ = exec.Command("ip", "link", "del", name).Run() })
+}
+
+// startDaemon runs `ip netns exec <ns> wireguard-go -f <iface>` (UNIQUE iface name) with
+// env, waits until its UAPI socket accepts a connection (a LIVE listener, not merely the
+// path existing — a SIGKILLed prior daemon can leave a stale socket file), tracks the
+// process + socket path for teardown, and returns the created iface name.
+func (l *lab) startDaemon(ns string, env []string) string {
+	l.t.Helper()
+	iface := fmt.Sprintf("wgt%d", ifaceSeq.Add(1))
+	cmd := exec.Command("ip", "netns", "exec", ns, wgBin(l.t), "-f", iface)
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr // daemon logs go to test output
+	if err := cmd.Start(); err != nil {
+		l.t.Fatalf("start daemon %s/%s: %v", ns, iface, err)
+	}
+	l.procs = append(l.procs, cmd)
+	sock := "/var/run/wireguard/" + iface + ".sock"
+	l.socks = append(l.socks, sock)
+	if !waitFor(5*time.Second, func() bool {
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
+	}) {
+		l.t.Fatalf("UAPI socket %s did not become live", sock)
+	}
+	return iface
+}
+
+// uapiSet writes a set= transaction to the daemon's UAPI socket and checks errno=0.
+func (l *lab) uapiSet(iface, cfg string) {
+	l.t.Helper()
+	c, err := net.Dial("unix", "/var/run/wireguard/"+iface+".sock")
+	if err != nil {
+		l.t.Fatalf("dial uapi %s: %v", iface, err)
+	}
+	defer c.Close()
+	if _, err := fmt.Fprintf(c, "set=1\n%s\n", cfg); err != nil {
+		l.t.Fatalf("write uapi: %v", err)
+	}
+	buf := make([]byte, 256)
+	n, _ := c.Read(buf)
+	if !bytes.Contains(buf[:n], []byte("errno=0")) {
+		l.t.Fatalf("uapi set %s failed: %s", iface, buf[:n])
+	}
+}
+
+// ifup assigns the tunnel address and brings the wg interface up inside its namespace.
+func (l *lab) ifup(ns, iface, cidr string) {
+	l.run("ip", "-n", ns, "addr", "add", cidr, "dev", iface)
+	l.run("ip", "-n", ns, "link", "set", iface, "up")
+}
+
+// ping runs ping inside ns and returns whether it succeeded.
+func (l *lab) ping(ns, target string) bool {
+	cmd := exec.Command("ip", "netns", "exec", ns, "ping", "-c", "3", "-W", "2", target)
+	return cmd.Run() == nil
+}
+
+// startWstunnel runs the real wstunnel server binary in ns (plain ws), restricted to
+// the wg UDP endpoint; skips the whole test if WSTUNNEL_BIN is unset.
+func (l *lab) startWstunnel(ns, listenURL, restrictTo string) {
+	l.t.Helper()
+	bin := os.Getenv("WSTUNNEL_BIN")
+	if bin == "" {
+		// If the e2e runs at all (Linux+root, past requireRootLinux), wstunnel is REQUIRED —
+		// a missing binary is a setup failure, never a reason to skip and hide the gap.
+		l.t.Fatal("WSTUNNEL_BIN not set (the wstunnel e2e requires the real wstunnel binary)")
+	}
+	cmd := exec.Command("ip", "netns", "exec", ns, bin, "server", "--restrict-to", restrictTo, listenURL)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	if err := cmd.Start(); err != nil {
+		l.t.Fatalf("start wstunnel: %v", err)
+	}
+	l.procs = append(l.procs, cmd)
+	time.Sleep(500 * time.Millisecond) // let it bind
+}
+
+func (l *lab) cleanup() {
+	for _, c := range l.procs {
+		if c.Process != nil {
+			_ = c.Process.Kill()
+			_, _ = c.Process.Wait()
+		}
+	}
+	for _, s := range l.socks {
+		_ = os.Remove(s) // SIGKILL does not let the daemon remove its own UAPI socket
+	}
+	for _, ns := range l.ns {
+		_ = exec.Command("ip", "netns", "del", ns).Run()
+	}
+}
+
+func waitFor(d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+func hexKey(b []byte) string { return fmt.Sprintf("%x", b) }
+func itoa(i int) string      { return strconv.Itoa(i) }
+```
+
+- [ ] **Action 13.3.3** — create `tests/e2e/keys_test.go` (`//go:build linux && e2e`): a `genKeypair`
+  helper returning a clamped Curve25519 private key + public key as **hex** (via `golang.org/x/crypto/
+  curve25519`, already a dependency), for UAPI `private_key=`/`public_key=`. Mirror the clamping in
+  `conn/ws_testhelpers_test.go`'s `wgKeypair` (private hex, public hex).
+- [ ] **Action 13.3.4** — create `tests/e2e/tls_test.go` (`//go:build linux && e2e`): a `genServerCert`
+  helper that generates a self-signed P-256 cert with an IP SAN (for the WS wss server), writes
+  `cert.pem`/`key.pem` to `t.TempDir()`, and returns their paths (used by the WS e2e via
+  `WG_WS_TLS_CERT`/`WG_WS_TLS_KEY`, trusted by the client via `WG_WS_TLS_CA`).
+
+### [ ] Task 13.4 — Tier-2: e2e tests (UDP / WS / wstunnel)
+- [ ] **Action 13.4.1** — create `tests/e2e/e2e_test.go` (`//go:build linux && e2e`) with the three tests
+  (compressed format). All build a bridge + namespaces, start real daemons, configure via UAPI + `ifup`,
+  and assert `l.ping(...)`. Underlay subnet `10.9.0.0/24`; tunnel subnet `10.10.0.0/24`.
+
+| Test | Topology | Server env / config | Client env / config | Assert |
+|---|---|---|---|---|
+| `TestE2E_UDP` | ns1(10.9.0.1) ↔ br ↔ ns2(10.9.0.2) | wg2: `listen_port=P`; peer=pub1, allowed 10.10.0.1/32 | wg1: peer=pub2, `endpoint=10.9.0.2:P`, allowed 10.10.0.2/32 | `l.ping(ns1, "10.10.0.2")` true |
+| `TestE2E_WebSocket` | ns1 ↔ br ↔ ns2 | wg2 env `WG_TRANSPORT=ws WG_WS_ROLE=server WG_WS_TLS_CERT/KEY=…`; UAPI `ws_listen=wss://10.9.0.2:P/wg` | wg1 env `WG_TRANSPORT=ws WG_WS_TLS_CA=…`; UAPI peer `endpoint=wss://10.9.0.2:P/wg` (ws_mode standard) | ping true |
+| `TestE2E_Wstunnel` | ns1 ↔ br ↔ ns0(wstunnel) ↔ ns2(udp wg) | wg2: plain UDP `listen_port=P`; wstunnel(ns0) `server --restrict-to 10.9.0.2:P ws://10.9.0.3:PW` | wg1 env `WG_TRANSPORT=ws`; UAPI peer `endpoint=ws://10.9.0.3:PW/v1 ws_mode=wstunnel ws_target=10.9.0.2:P` | ping true (unmasked default through real wstunnel) |
+
+  - Each test picks free UDP/TCP ports (bind :0, read back, close) for `P`/`PW`, or uses fixed
+    high ports within the isolated namespaces. Interface names are NOT hard-coded: `l.startDaemon(ns, env)`
+    assigns a unique short name (`wgt<n>`) and RETURNS it; the test passes that name to `l.uapiSet(iface, cfg)`
+    and `l.ifup(ns, iface, tunCidr)`. This guarantees the UAPI sockets never collide across the three
+    sequential tests on the shared filesystem (the `wg2`/`wg1` labels in the table denote the server/client
+    ROLE, not a literal interface name).
+  - `TestE2E_Wstunnel` and `TestE2E_WebSocket` derive server IP SANs from the fixed underlay addresses.
+
+### [ ] Task 13.5 — Makefile + delete netns.sh
+- [ ] **Action 13.5.1** — modify `Makefile` `test-e2e` to build the binary and run the Go e2e as root via
+  a compiled test binary (`go test -c` as the normal user; the binary runs under `sudo -E` so `go`
+  need not be in root's PATH):
+
+```make
+test-e2e: wireguard-go
+	go test -tags=e2e -c -o wireguard-go-e2e.test ./tests/e2e/
+	sudo WG_GO_BIN="$(CURDIR)/wireguard-go" WSTUNNEL_BIN="$(WSTUNNEL_BIN)" ./wireguard-go-e2e.test -test.v -test.timeout=300s
+	rm -f wireguard-go-e2e.test
+```
+
+  The env vars are passed **explicitly** through `sudo` (not via `-E`, which some sudoers strip);
+  `WSTUNNEL_BIN` is a make variable inherited from the caller's environment. The harness hard-fails
+  (`t.Fatal`) when `WG_GO_BIN` or `WSTUNNEL_BIN` is missing, so a stripped or missing env is a HARD
+  failure (or a loud `sudo` rejection) — never a silent all-skip false-green.
+
+- [ ] **Action 13.5.2** — delete `tests/netns.sh` (replaced by `tests/e2e/`; user-approved). Update the
+  `.PHONY`/comments in the `Makefile` if they reference it.
+
+### [ ] Task 13.6 — CI: parallel e2e job + darwin tests
+- [ ] **Action 13.6.1** — modify `.github/workflows/ci.yml`: add a new **`e2e`** job (parallel, NO `needs:`)
+  on `ubuntu-latest` that checks out, sets up Go, builds `wireguard-go` (`make`/`go build -o wireguard-go .`),
+  downloads wstunnel **v10.6.2 linux_amd64** and verifies its SHA-256
+  `db6064cca0515b67f8652e201cff8e27553b8cbb7216b2e19241311e34868e6e`, exports `WSTUNNEL_BIN`, and runs
+  `make test-e2e`. GitHub runners provide passwordless `sudo`.
+
+```yaml
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+      - name: Install wstunnel (pinned + checksum)
+        run: |
+          cd "$(mktemp -d)"
+          url=https://github.com/erebe/wstunnel/releases/download/v10.6.2/wstunnel_10.6.2_linux_amd64.tar.gz
+          curl -fsSL "$url" -o wstunnel.tgz
+          echo "db6064cca0515b67f8652e201cff8e27553b8cbb7216b2e19241311e34868e6e  wstunnel.tgz" | sha256sum -c -
+          tar xzf wstunnel.tgz
+          sudo install -m 0755 wstunnel /usr/local/bin/wstunnel
+          echo "WSTUNNEL_BIN=/usr/local/bin/wstunnel" >> "$GITHUB_ENV"
+      - run: make test-e2e
+```
+
+- [ ] **Action 13.6.2** — modify the `darwin` job: after the build step, add `- run: go test -race ./...`
+  (Tier-1 runtime coverage on macOS, incl. the darwin-tagged pinning/path-monitor tests). Keep it parallel.
+- [ ] **Action 13.6.3** — confirm NO job declares `needs:` (all jobs run in parallel): `quality`, `mermaid`,
+  `android`, `darwin`, `e2e`.
+
+### [ ] Task 13.7 — Docs + ground-up double-check (plan-final gate)
+- [ ] **Action 13.7.1** — update the canonical docs to reflect the new test topology so NO reference to
+  the deleted `tests/netns.sh` survives:
+  - `docs/PROJECT.md` **Testing section** (in-process UDP/WS/wstunnel integration + Go netns e2e;
+    `netns.sh` removed; `WG_GO_BIN`/`WSTUNNEL_BIN`) AND its **Repository Layout table** — remove the
+    `tests/netns.sh` row and add a `tests/e2e/` row (Linux netns e2e, `//go:build linux && e2e`).
+  - `.claude/rules/project.md` (Testing + Standard Commands: `make test-e2e` now runs the Go e2e; the
+    in-repo harnesses list gains the fake-wstunnel relay and the netns e2e).
+  - `.claude/rules/go.md` — the e2e-convention example currently cites `tests/netns.sh`; update it to
+    reflect that this repo's e2e uses `//go:build linux && e2e` under `tests/e2e/` (no `netns.sh`).
+  - Verify with a repo-scoped `git grep -n 'netns.sh'` returning nothing outside this plan's history.
+  No Mermaid charts are added, so no `mermaid-check` step is required for US13.
+- [ ] **Action 13.7.2** — re-read US13; confirm every action landed and every acceptance criterion is
+  checked; confirm `tests/netns.sh` is gone and nothing references it.
+- [ ] **Action 13.7.3** — run the FULL quality gates (project commands, ONLY here): `make vet`, `make lint`,
+  `go build ./...`, `make test` (`-race`; includes the new Tier-1 UDP + wstunnel integration tests),
+  `make tidy` (NO diff), `make vulncheck`. Capture each long run through `tee` to `/tmp/wireguard-go-<gate>.log`.
+- [ ] **Action 13.7.4** — e2e compiles for its target without executing on non-Linux: `GOOS=linux go vet
+  -tags=e2e ./tests/e2e/` MUST pass. Where a privileged Linux environment is available (e.g. a
+  `--privileged` container or the CI `e2e` job), `make test-e2e` MUST pass for UDP, WS, and wstunnel; on a
+  non-Linux dev host the netns e2e is validated by compilation + the CI job.
+- [ ] **Action 13.7.5** — cross-platform compile matrix (as US12): `GOOS in {linux,darwin,windows,freebsd,
+  openbsd}` `go build ./...` + `GOOS=android` lib build + `GOOS=darwin` cgo build. gobwas + the new tests
+  are pure Go; every target MUST resolve.
+
+**US13 DoD:** real-UDP in-process tunnel test + in-process wstunnel integration (with masking/prefix
+regression guards) green in the `quality` job on all OS; Go netns e2e (UDP/WS/wstunnel) runs in the CI
+`e2e` job and skips cleanly off-Linux/non-root; `netns.sh` removed; `darwin` job runs the suite; all CI
+jobs parallel; all quality gates pass and the e2e package compiles for `GOOS=linux -tags=e2e`.
 
 ---
 
