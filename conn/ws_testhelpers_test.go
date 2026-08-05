@@ -95,6 +95,16 @@ func (b *wsBridge) serve(c *websocket.Conn) {
 // url converts the httptest http(s):// base into ws(s)://.
 func (b *wsBridge) url() string { return "ws" + strings.TrimPrefix(b.srv.URL, "http") }
 
+// dropAll force-closes every accepted connection (reconnect tests).
+func (b *wsBridge) dropAll() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, p := range b.peers {
+		_ = p.CloseNow()
+	}
+	b.peers = nil
+}
+
 func (b *wsBridge) clientTLS() *tls.Config {
 	if b.srv.TLS == nil {
 		return nil
@@ -102,6 +112,22 @@ func (b *wsBridge) clientTLS() *tls.Config {
 	cp := x509.NewCertPool()
 	cp.AddCert(b.srv.Certificate())
 	return &tls.Config{RootCAs: cp}
+}
+
+// newWSSilentServer accepts WebSocket upgrades but never reads, so it never sends
+// automatic pong replies — used to exercise the client ping-timeout backstop.
+func newWSSilentServer(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		<-r.Context().Done()
+		_ = c.CloseNow()
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http")
 }
 
 // wgKeypair returns a clamped Curve25519 private key and its public key, hex-encoded.
@@ -124,7 +150,8 @@ func wgKeypair(t *testing.T) (priv, pub string) {
 // newWSDevicePair brings up two WireGuard devices whose binds are client-role
 // WebSocketBinds pointed at the same relay, so they tunnel over WebSocket.
 // Persistent keepalive makes both dial promptly so the relay can pair them.
-func newWSDevicePair(t *testing.T, useTLS bool) (a, b *tuntest.ChannelTUN) {
+// The returned bridge lets a test force a reconnect via dropAll.
+func newWSDevicePair(t *testing.T, useTLS bool) (a, b *tuntest.ChannelTUN, bridge *wsBridge) {
 	t.Helper()
 	br := newWSBridge(t, useTLS, false)
 	priv1, pub1 := wgKeypair(t)
@@ -156,7 +183,7 @@ func newWSDevicePair(t *testing.T, useTLS bool) (a, b *tuntest.ChannelTUN) {
 	// peer 1 allows peer 2's IP (1.0.0.2) and vice versa.
 	a = mk(2, priv1, pub2)
 	b = mk(1, priv2, pub1)
-	return a, b
+	return a, b, br
 }
 
 // wsAssertPing sends one ping from -> to and fails if it does not transit within
