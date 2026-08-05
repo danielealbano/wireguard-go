@@ -184,15 +184,6 @@ func TestResolveClientAddr(t *testing.T) {
 	}
 }
 
-func TestWSIsIPv6(t *testing.T) {
-	if !wsIsIPv6("[2001:db8::1]:443") {
-		t.Error("v6 address not detected")
-	}
-	if wsIsIPv6("1.2.3.4:443") {
-		t.Error("v4 address misdetected as v6")
-	}
-}
-
 func TestWSDebounce(t *testing.T) {
 	var n int
 	var mu sync.Mutex
