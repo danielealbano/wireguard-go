@@ -27,6 +27,13 @@ func wsIsIPv6(address string) bool {
 	return err == nil && ap.Addr().Is6() && !ap.Addr().Is4In6()
 }
 
+// wsIsLoopback reports whether the dial address is loopback; such dials never leave
+// the host and must not be pinned to a physical egress interface.
+func wsIsLoopback(address string) bool {
+	ap, err := netip.ParseAddrPort(address)
+	return err == nil && ap.Addr().IsLoopback()
+}
+
 // defaultEgressIfIndex returns the interface index of the default route
 // (best-effort). Real on-device pinning is a Manual QA item.
 func defaultEgressIfIndex() int {

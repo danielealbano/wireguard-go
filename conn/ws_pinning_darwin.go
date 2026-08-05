@@ -19,6 +19,9 @@ import (
 func (b *WebSocketBind) dialControl() func(network, address string, c syscall.RawConn) error {
 	return func(network, address string, c syscall.RawConn) error {
 		idx := b.egressIfIndex() // recomputed per dial; 0 => skip pin
+		if wsIsLoopback(address) {
+			idx = 0 // loopback never leaves the host; pinning it would break the dial
+		}
 		v6 := wsIsIPv6(address)
 		var serr error
 		cerr := c.Control(func(fd uintptr) {
