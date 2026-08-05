@@ -6,13 +6,13 @@
 package conn
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
-	"net/http"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/gobwas/ws"
 )
 
 // clientConn returns the live connection for we, dialing once on demand. The read
@@ -57,7 +57,7 @@ func (b *WebSocketBind) clientConn(we *WSEndpoint) (*wsClientConn, error) {
 	}
 	if b.closed {
 		b.mu.Unlock()
-		c.conn.CloseNow()
+		_ = c.wc.conn.Close()
 		return nil, net.ErrClosed
 	}
 	delete(b.dialBackoff, we.url) // success resets backoff
@@ -83,19 +83,29 @@ func (b *WebSocketBind) dial(ctx context.Context, we *WSEndpoint) (*wsClientConn
 	if err != nil {
 		return nil, err
 	}
-	dialer := &net.Dialer{Timeout: 15 * time.Second, Control: b.dialControl()}
-	tr := &http.Transport{
-		DialContext:     dialer.DialContext,
-		TLSClientConfig: b.cfg.tlsClient, // nil => system roots
+	dialer := ws.Dialer{
+		NetDial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := &net.Dialer{Timeout: 15 * time.Second, Control: b.dialControl()}
+			return d.DialContext(ctx, network, addr)
+		},
+		TLSConfig: b.cfg.tlsClient, // nil => system roots (gobwas tlsDefaultConfig, SNI from host)
+		Protocols: subprotos,
+		Header:    ws.HandshakeHeaderHTTP(header),
+		Timeout:   15 * time.Second,
 	}
-	conn, _, err := websocket.Dial(ctx, dialURL, &websocket.DialOptions{
-		HTTPClient:   &http.Client{Transport: tr},
-		HTTPHeader:   header,
-		Subprotocols: subprotos,
-	})
+	netConn, br, _, err := dialer.Dial(ctx, dialURL)
 	if err != nil {
 		return nil, fmt.Errorf("ws dial %s: %w", we.url, err)
 	}
+	if br == nil {
+		br = bufio.NewReader(netConn) // gobwas returns nil when nothing was buffered past the handshake
+	}
 	cctx, cancel := context.WithCancel(ctx)
-	return &wsClientConn{conn: conn, ep: we, ctx: cctx, cancel: cancel}, nil
+	return &wsClientConn{
+		wc:     &wsConn{conn: netConn, br: br, mask: b.cfg.maskFrames},
+		ep:     we,
+		ctx:    cctx,
+		cancel: cancel,
+		pong:   make(chan struct{}, 1),
+	}, nil
 }

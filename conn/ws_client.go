@@ -9,7 +9,7 @@ import (
 	"context"
 	"net"
 
-	"github.com/coder/websocket"
+	"github.com/gobwas/ws"
 )
 
 // Concurrency contract (avoids send-on-closed-channel panics):
@@ -68,10 +68,8 @@ func (b *WebSocketBind) Send(bufs [][]byte, ep Endpoint) error {
 	if err != nil {
 		return err
 	}
-	c.writeM.Lock()
-	defer c.writeM.Unlock()
 	for _, buf := range bufs {
-		if err := c.conn.Write(c.ctx, websocket.MessageBinary, buf); err != nil { // per-conn ctx (no b.ctx field race)
+		if err := c.wc.writeFrame(ws.OpBinary, buf); err != nil { // writeFrame serialises on wc.writeM
 			return err
 		}
 		b.metrics.addTx(1, uint64(len(buf)))
@@ -83,7 +81,6 @@ func (b *WebSocketBind) Send(bufs [][]byte, ep Endpoint) error {
 // queue. inbound/done are captured from b under b.mu at dial time and passed in —
 // never read from the fields in the loop, to stay race-free with Open/Close.
 func (b *WebSocketBind) readLoop(c *wsClientConn, inbound chan<- wsInbound, done <-chan struct{}) {
-	c.conn.SetReadLimit(wsReadLimit)
 	defer func() {
 		b.mu.Lock()
 		if b.conns[c.ep.url] == c {
@@ -91,19 +88,22 @@ func (b *WebSocketBind) readLoop(c *wsClientConn, inbound chan<- wsInbound, done
 		}
 		b.mu.Unlock()
 		c.cancel()
-		c.conn.CloseNow()
+		_ = c.wc.conn.Close()
 	}()
+	onPong := func() {
+		select {
+		case c.pong <- struct{}{}:
+		default:
+		}
+	}
 	for {
-		typ, data, err := c.conn.Read(c.ctx)
+		data, err := c.wc.readMessage(wsReadLimit, onPong)
 		if err != nil {
 			if !b.isClosed() {
 				b.cfg.logger.verbosef("websocket read on %s ended, will reconnect: %v", c.ep.DstToString(), err)
 				b.metrics.incReconnect(c.ep.DstToString())
 			}
 			return
-		}
-		if typ != websocket.MessageBinary {
-			continue
 		}
 		select {
 		case inbound <- wsInbound{data: data, ep: c.ep}:
@@ -150,10 +150,10 @@ func (b *WebSocketBind) Close() error {
 		_ = srv.Close() // stops the listener + Accept handlers (server role)
 	}
 	for _, c := range clients {
-		c.conn.CloseNow() // idempotent; the read loop may also call it
+		_ = c.wc.conn.Close() // idempotent; the read loop may also close it
 	}
 	for _, sc := range servers {
-		sc.conn.CloseNow()
+		_ = sc.wc.conn.Close()
 	}
 	b.readWG.Wait() // join all read/ping loops
 

@@ -13,8 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 // WebSocketBind tunnels the WireGuard wire protocol over ws:// / wss:// instead of
@@ -54,18 +52,16 @@ type wsInbound struct {
 }
 
 type wsClientConn struct {
-	conn   *websocket.Conn
-	writeM sync.Mutex
+	wc     *wsConn
 	ep     *WSEndpoint
 	ctx    context.Context    // per-connection; derived from the open ctx, cancelled on drop/close
 	cancel context.CancelFunc // stops this conn's read loop + ping ticker
+	pong   chan struct{}      // buffered(1); read loop signals a received pong to pingLoop
 }
 
 type wsServerConn struct {
-	conn   *websocket.Conn
-	writeM sync.Mutex
-	id     uint64
-	ctx    context.Context // captured at accept from the open ctx
+	wc *wsConn
+	id uint64
 }
 
 type wsBackoff struct {

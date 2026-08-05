@@ -6,37 +6,48 @@
 package conn
 
 import (
-	"context"
 	"time"
+
+	"github.com/gobwas/ws"
 )
 
-// pingLoop pings the connection every cfg.pingInterval; each ping is bounded by a
-// timeout so a silent/half-open peer (no pong) is detected. On failure it cancels
-// the connection, which unblocks its read loop and makes the next Send re-dial. It
-// exits when the per-connection ctx is cancelled (drop or bind Close). It records RTT.
+// pingLoop writes an OpPing every cfg.pingInterval and waits for the read loop to
+// signal the matching pong, bounded by pingInterval so a silent/half-open peer (no
+// pong) is detected. On write failure or pong timeout it closes the connection —
+// unblocking the read loop so the next Send re-dials — and cancels the per-connection
+// ctx. It exits when that ctx is cancelled (drop or bind Close). It records RTT.
 func (b *WebSocketBind) pingLoop(c *wsClientConn) {
 	if b.cfg.pingInterval <= 0 {
 		return
 	}
 	t := time.NewTicker(b.cfg.pingInterval)
 	defer t.Stop()
+	fail := func(format string, args ...any) {
+		if c.ctx.Err() == nil { // a real ping failure/timeout, not a bind close
+			b.cfg.logger.verbosef(format, args...)
+			c.cancel()
+			_ = c.wc.conn.Close()
+		}
+	}
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		case <-t.C:
 			start := time.Now()
-			pingCtx, cancel := context.WithTimeout(c.ctx, b.cfg.pingInterval)
-			err := c.conn.Ping(pingCtx)
-			cancel()
-			if err != nil {
-				if c.ctx.Err() == nil { // a real ping failure/timeout, not a bind close
-					b.cfg.logger.verbosef("websocket ping to %s failed, will reconnect: %v", c.ep.DstToString(), err)
-					c.cancel() // triggers read-loop exit + reconnect
-				}
+			if err := c.wc.writeFrame(ws.OpPing, wsPingPayload); err != nil {
+				fail("websocket ping to %s failed, will reconnect: %v", c.ep.DstToString(), err)
 				return
 			}
-			b.metrics.observeRTT(c.ep.DstToString(), time.Since(start).Seconds())
+			select {
+			case <-c.pong:
+				b.metrics.observeRTT(c.ep.DstToString(), time.Since(start).Seconds())
+			case <-time.After(b.cfg.pingInterval):
+				fail("websocket pong from %s timed out, will reconnect", c.ep.DstToString())
+				return
+			case <-c.ctx.Done():
+				return
+			}
 		}
 	}
 }

@@ -62,6 +62,7 @@ type wsConfig struct {
 	backoffMax     time.Duration
 	trustedProxies []netip.Prefix
 	protect        func(fd int)
+	maskFrames     bool // client role: mask outgoing WebSocket frames (default off, unmasked)
 	logger         Logger
 }
 
@@ -90,4 +91,5 @@ func WithWSTrustedProxies(p []netip.Prefix) WSOption {
 func WithWSProtect(fn func(fd int)) WSOption {
 	return func(c *wsConfig) error { c.protect = fn; return nil }
 }
+func WithWSMask(on bool) WSOption    { return func(c *wsConfig) error { c.maskFrames = on; return nil } }
 func WithWSLogger(l Logger) WSOption { return func(c *wsConfig) error { c.logger = l; return nil } }

@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/coder/websocket"
+	"github.com/gobwas/ws"
 )
 
 func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound chan wsInbound, done <-chan struct{}) ([]ReceiveFunc, uint16, error) {
@@ -31,7 +31,7 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		c, err := websocket.Accept(w, r, nil)
+		netConn, rw, _, err := ws.HTTPUpgrader{Protocol: func(p string) bool { return p == "v1" }}.Upgrade(r, w)
 		if err != nil {
 			return
 		}
@@ -39,12 +39,12 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 		b.mu.Lock()
 		if b.closed {
 			b.mu.Unlock()
-			c.CloseNow()
+			_ = netConn.Close()
 			return
 		}
 		b.nextConnID++
 		id := b.nextConnID
-		sc := &wsServerConn{conn: c, id: id, ctx: ctx}
+		sc := &wsServerConn{wc: &wsConn{conn: netConn, br: rw.Reader}, id: id}
 		b.sconns[id] = sc
 		b.readWG.Add(1) // under b.mu with the closed check (no WaitGroup misuse)
 		b.mu.Unlock()
@@ -98,22 +98,18 @@ func (b *WebSocketBind) checkBearer(r *http.Request) bool {
 }
 
 func (b *WebSocketBind) serverReadLoop(sc *wsServerConn, ep *WSEndpoint, inbound chan<- wsInbound, done <-chan struct{}) {
-	sc.conn.SetReadLimit(wsReadLimit)
 	defer func() {
 		b.mu.Lock()
 		if b.sconns[sc.id] == sc {
 			delete(b.sconns, sc.id)
 		}
 		b.mu.Unlock()
-		sc.conn.CloseNow()
+		_ = sc.wc.conn.Close()
 	}()
 	for {
-		typ, data, err := sc.conn.Read(sc.ctx) // per-conn ctx captured at accept (no b.ctx field race)
+		data, err := sc.wc.readMessage(wsReadLimit, nil) // accepts masked or unmasked; answers pings
 		if err != nil {
 			return
-		}
-		if typ != websocket.MessageBinary {
-			continue
 		}
 		select {
 		case inbound <- wsInbound{data: data, ep: ep}:
@@ -133,10 +129,8 @@ func (b *WebSocketBind) serverSend(bufs [][]byte, we *WSEndpoint) error {
 	if sc == nil {
 		return fmt.Errorf("no active websocket connection for peer (id %d)", we.connID)
 	}
-	sc.writeM.Lock()
-	defer sc.writeM.Unlock()
 	for _, buf := range bufs {
-		if err := sc.conn.Write(sc.ctx, websocket.MessageBinary, buf); err != nil {
+		if err := sc.wc.writeFrame(ws.OpBinary, buf); err != nil { // writeFrame serialises on wc.writeM
 			return err
 		}
 		b.metrics.addTx(1, uint64(len(buf)))
