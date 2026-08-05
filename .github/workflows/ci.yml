@@ -9,14 +9,14 @@ permissions:
   contents: read
 
 jobs:
-  quality:
+  lint-vet-test:
+    name: lint, vet, test (linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-go@v7.0.0
         with:
           go-version: stable
-      - run: go build ./...
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@v9.3.0
         with:
@@ -25,13 +25,33 @@ jobs:
       - run: go mod tidy && git diff --exit-code go.mod go.sum
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-  mermaid:
-    runs-on: ubuntu-latest
+  test-macos:
+    name: build, test (macos, cgo)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7.0.1
-      - run: ./scripts/mermaid-check.sh docs
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+      - run: CGO_ENABLED=1 go build ./...
+      - run: go test -race ./...
 
-  android:
+  build:
+    name: build (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows, freebsd, openbsd]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+      - run: GOOS=${{ matrix.goos }} CGO_ENABLED=0 go build ./...
+
+  build-android:
+    name: build (android, library)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -47,17 +67,8 @@ jobs:
             GOOS=android GOARCH=$arch CGO_ENABLED=0 go build $pkgs
           done
 
-  darwin:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
-        with:
-          go-version: stable
-      - run: CGO_ENABLED=1 go build ./...
-      - run: go test -race ./...
-
   e2e:
+    name: e2e (linux netns)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -74,3 +85,10 @@ jobs:
           sudo install -m 0755 wstunnel /usr/local/bin/wstunnel
           echo "WSTUNNEL_BIN=/usr/local/bin/wstunnel" >> "$GITHUB_ENV"
       - run: make test-e2e
+
+  mermaid:
+    name: mermaid (docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: ./scripts/mermaid-check.sh docs
