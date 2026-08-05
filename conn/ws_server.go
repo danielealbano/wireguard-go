@@ -20,9 +20,18 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 	// openServer is called from Open under b.mu, so this read is synchronized with
 	// SetWSListen; capture a local so the serve goroutine below never touches the field.
 	listenURL := b.cfg.listenURL
+	if listenURL == "" {
+		// No ws_listen configured yet: bring the bind up with a receiver but no HTTP
+		// server. Setting ws_listen via UAPI triggers BindUpdate, which re-opens here
+		// with the listener. (A device can go Up before ws_listen is set.)
+		return []ReceiveFunc{makeWSReceiveFunc(inbound, done)}, port, nil
+	}
 	u, err := url.Parse(listenURL)
 	if err != nil {
 		return nil, 0, err
+	}
+	if u.Path == "" {
+		u.Path = "/" // http.ServeMux panics on an empty pattern
 	}
 	b.sconns = make(map[uint64]*wsServerConn)
 	mux := http.NewServeMux()

@@ -346,3 +346,22 @@ func TestWSServer_OpenCloseStress(t *testing.T) {
 		}
 	}
 }
+
+func TestWSServer_OpenWithoutListenURL(t *testing.T) {
+	// A server-role bind opened before ws_listen is configured (a device can go Up
+	// first) must bring up a receiver with no HTTP server — never panic in ServeMux.
+	b, err := conn.NewWebSocketBind(conn.WithWSRole(conn.WSRoleServer))
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	fns, _, err := b.Open(0)
+	if err != nil {
+		t.Fatalf("Open with no ws_listen: %v", err)
+	}
+	if len(fns) == 0 {
+		t.Fatal("expected a receive func even without a listener")
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
