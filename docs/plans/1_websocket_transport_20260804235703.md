@@ -1194,10 +1194,16 @@ func (b *WebSocketBind) pingLoop(c *wsClientConn) {
 		case <-c.ctx.Done():
 			return
 		case <-t.C:
-			if err := c.conn.Ping(c.ctx); err != nil {
-				c.cancel() // triggers read-loop exit + reconnect
+			pingCtx, cancel := context.WithTimeout(c.ctx, b.cfg.pingInterval)
+			err := c.conn.Ping(pingCtx) // bounded: Ping blocks until pong or ctx done
+			cancel()
+			if err != nil {
+				if c.ctx.Err() == nil { // a real timeout/failure, not a bind close
+					c.cancel() // triggers read-loop exit + reconnect
+				}
 				return
 			}
+			// (US8 records RTT here via b.metrics.observeRTT.)
 		}
 	}
 }
@@ -2725,6 +2731,12 @@ up (pipeline requires the last item to verify the whole plan). Depends on: US1â€
   `SetWSListen` (a `ws_listen=` UAPI line triggers `BindUpdate`) and read by `openServer`, which can run
   concurrently. `SetWSListen` now writes it under `b.mu`, and `openServer` (called from `Open` under
   `b.mu`) snapshots it into a local so the serve goroutine never touches the field. `-race` clean.
+- **Ping is bounded by a timeout (US4).** The planned `pingLoop` called `c.conn.Ping(c.ctx)` with no
+  deadline; because `coder/websocket`'s `Ping` blocks until a pong or the ctx is cancelled, a half-open
+  (silent) peer would never be detected and the backstop would never fire. Each ping is now bounded by
+  `context.WithTimeout(c.ctx, cfg.pingInterval)`, with a `c.ctx.Err() == nil` guard so a real
+  timeout/failure (not a bind close) triggers `c.cancel()` and a reconnect. The US4 `pingLoop` code
+  block is synchronized to match.
 - **Darwin egress pinning skips loopback (US5).** The darwin `dialControl` skips `IP_BOUND_IF` for
   loopback destinations (`wsIsLoopback` in `conn/ws_iface_darwin.go`): pinning a loopback dial to the
   physical egress interface makes the connect fail (`can't assign requested address`). This is correct
