@@ -49,6 +49,11 @@ Additive keys accepted only when `WG_TRANSPORT=ws`. Every other unknown key is s
 |---|---|---|
 | `ws_listen=<ws(s)://host:port/path>` | server | The listen URL for the WebSocket server. Setting it re-arms the listener (`BindUpdate`). |
 
+`ws_listen` is a **persistent device scalar, like `listen_port`**: a `set=1` that omits it (e.g. a
+full-replace `setconf`) leaves the current listener **unchanged** — it is not cleared by omission or by
+`replace_peers`. To stop the server explicitly, send `ws_listen=` with an **empty** value, which cleanly
+tears the listener down.
+
 **Peer-level** (follow a `public_key` line, like `endpoint`/`allowed_ip`):
 
 | Key | Meaning |
