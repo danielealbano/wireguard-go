@@ -112,6 +112,32 @@ func TestWSUpgrade_Wstunnel(t *testing.T) {
 	}
 }
 
+func TestWSUpgrade_WstunnelDefaultPrefix(t *testing.T) {
+	// A wstunnel endpoint with no path must target wstunnel's default /v1/events
+	// (DEFAULT_CLIENT_UPGRADE_PATH_PREFIX = "v1"), matching the stock wstunnel client.
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{name: "no path", url: "wss://relay.example.com:8443", want: "/v1/events"},
+		{name: "root path", url: "wss://relay.example.com:8443/", want: "/v1/events"},
+		{name: "explicit prefix preserved", url: "wss://relay.example.com/custom", want: "/custom/events"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &WSEndpoint{url: tc.url, dialect: wsDialectWstunnel, target: "10.0.0.5:51820"}
+			dialURL, _, _, err := wsUpgradeRequest(e)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if !strings.HasSuffix(dialURL, tc.want) {
+				t.Errorf("dialURL = %q, want suffix %q", dialURL, tc.want)
+			}
+		})
+	}
+}
+
 func TestWstunnelJWT_Verifiable(t *testing.T) {
 	secret := []byte("shared-test-secret")
 	tok, err := wstunnelJWT("host:1234", secret)
