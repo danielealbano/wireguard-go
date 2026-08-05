@@ -277,12 +277,14 @@ flowchart TD
 - **Changes:**
   - `.goreleaser.yaml` (new): cross-compiled **binaries** for linux/windows/freebsd/openbsd across
     amd64/arm64 (+ arm where relevant), with archives and checksums. **darwin binaries require cgo**
-    (the `NWPathMonitor` bridge, D19), so they are built natively on a **standard GitHub-hosted macOS
-    runner** — which is **free for public repositories** (verified: only *larger* runners are billed
-    for public repos, docs.github.com/en/billing/reference/actions-runner-pricing) — and imported into
-    the Linux release job via goreleaser's OSS **`builder: prebuilt`** (the documented CGO pattern,
-    goreleaser.com/customization/prebuilt). Docker/buildx must run on the Linux runner (no Docker on
-    macOS runners), which is why the release is a two-job split, not a single macOS job.
+    (the `NWPathMonitor` bridge, D19), so **all** binaries are built by a single goreleaser run on a
+    **standard GitHub-hosted macOS runner** — free for public repositories (verified: only *larger*
+    runners are billed for public repos, docs.github.com/en/billing/reference/actions-runner-pricing) —
+    with the darwin targets `CGO_ENABLED=1` and the linux/windows/bsd targets cross-compiled
+    `CGO_ENABLED=0`. NOTE: goreleaser's `prebuilt` builder is **PRO-only** (verified against v2.17.1 —
+    not in the OSS `Builder` enum), so it is NOT used. The multi-arch **container image** is built and
+    pushed by a **separate parallel Linux job** via `docker/build-push-action` (buildx must run on
+    Linux; no Docker on macOS runners), from a self-contained multi-stage `Dockerfile`.
   - **Docker images** (new `Dockerfile`, multi-stage, distroless/scratch, nonroot): multi-arch
     (amd64/arm64) built by goreleaser and **pushed to `ghcr.io/danielealbano/wireguard-go`** on `v*` tags
     (goreleaser `dockers` + `docker_manifests`).

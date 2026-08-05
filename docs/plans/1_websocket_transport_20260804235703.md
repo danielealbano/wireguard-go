@@ -2473,22 +2473,33 @@ exit "$fail"
 ```
 
 ### [ ] Task 10.2 — Container image
-- [ ] **Action 10.2.1** — create `Dockerfile` (multi-stage; goreleaser injects the prebuilt binary,
-  so the final stage just copies it — no in-image `go build`).
+> **Deviation (see `## Deviations`): `builder: prebuilt` is goreleaser PRO, not OSS.** Task 10.2/10.3/10.4
+> below reflect the OSS-only approach actually built: a self-contained multi-stage `Dockerfile`, a single
+> `.goreleaser.yaml` (run on macOS) for all binaries, and a separate Linux `docker/build-push-action`
+> job for the multi-arch image. No `.goreleaser.darwin.yaml`.
+
+- [ ] **Action 10.2.1** — create `Dockerfile` (self-contained multi-stage; buildx cross-compiles the
+  linux binary per target arch with CGO disabled).
 
 ```dockerfile
-# Final image only: goreleaser builds the binary and passes it in via the build context.
+FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS build
+WORKDIR /src
+COPY . .
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags "-s -w" -o /wireguard-go .
+
 FROM gcr.io/distroless/static:nonroot
-COPY wireguard-go /usr/bin/wireguard-go
+COPY --from=build /wireguard-go /usr/bin/wireguard-go
 ENTRYPOINT ["/usr/bin/wireguard-go"]
 ```
 
-  (Linux only — the daemon's TUN is linux/bsd; images target linux amd64/arm64. goreleaser's `dockers`
-  entries reference this `Dockerfile` and add each arch's built binary to the build context.)
-
 ### [ ] Task 10.3 — goreleaser
-- [ ] **Action 10.3.1** — create `.goreleaser.yaml` (v2), the release-assembly config run on the Linux
-  runner. `builder: prebuilt` is OSS (the Pro-only feature is split&merge, which we do NOT use).
+- [ ] **Action 10.3.1** — create `.goreleaser.yaml` (v2), run on the **macOS** runner in a single
+  invocation. Two `builds`: darwin `CGO_ENABLED=1` (native NWPathMonitor cgo) and the
+  linux/windows/bsd targets cross-compiled `CGO_ENABLED=0`; `archives` + unified `checksums.txt`. NO
+  `dockers`/`docker_manifests` (the image is built by the Linux job, Action 10.4.2).
 
 ```yaml
 version: 2
@@ -2500,14 +2511,16 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [linux, windows, freebsd, openbsd]
     goarch: [amd64, arm64]
+    flags: [-trimpath]
     ldflags: ["-s -w"]
   - id: darwin
-    builder: prebuilt
+    main: .
+    binary: wireguard-go
+    env: [CGO_ENABLED=1]
     goos: [darwin]
     goarch: [amd64, arm64]
-    binary: wireguard-go
-    prebuilt:
-      path: dist/wireguard-go_darwin_{{ .Arch }}/wireguard-go
+    flags: [-trimpath]
+    ldflags: ["-s -w"]
 archives:
   - id: default
     ids: [native, darwin]
@@ -2517,58 +2530,12 @@ archives:
         formats: [zip]
 checksum:
   name_template: "checksums.txt"
-dockers:
-  - id: amd64
-    goos: linux
-    goarch: amd64
-    ids: [native]
-    use: buildx
-    dockerfile: Dockerfile
-    image_templates:
-      - "ghcr.io/danielealbano/wireguard-go:{{ .Tag }}-amd64"
-      - "ghcr.io/danielealbano/wireguard-go:latest-amd64"
-    build_flag_templates: ["--platform=linux/amd64"]
-  - id: arm64
-    goos: linux
-    goarch: arm64
-    ids: [native]
-    use: buildx
-    dockerfile: Dockerfile
-    image_templates:
-      - "ghcr.io/danielealbano/wireguard-go:{{ .Tag }}-arm64"
-      - "ghcr.io/danielealbano/wireguard-go:latest-arm64"
-    build_flag_templates: ["--platform=linux/arm64"]
-docker_manifests:
-  - name_template: "ghcr.io/danielealbano/wireguard-go:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/danielealbano/wireguard-go:{{ .Tag }}-amd64"
-      - "ghcr.io/danielealbano/wireguard-go:{{ .Tag }}-arm64"
-  - name_template: "ghcr.io/danielealbano/wireguard-go:latest"
-    image_templates:
-      - "ghcr.io/danielealbano/wireguard-go:latest-amd64"
-      - "ghcr.io/danielealbano/wireguard-go:latest-arm64"
 ```
 
-- [ ] **Action 10.3.2** — create `.goreleaser.darwin.yaml` (macOS job; produces the cgo binaries the
-  Linux job imports).
-
-```yaml
-version: 2
-project_name: wireguard-go
-builds:
-  - id: darwin
-    main: .
-    binary: wireguard-go
-    env: [CGO_ENABLED=1]
-    goos: [darwin]
-    goarch: [amd64, arm64]
-    ldflags: ["-s -w"]
-```
-
-  Run as `goreleaser build --config .goreleaser.darwin.yaml --clean` (both arches). The produced
-  `dist/wireguard-go_darwin_<arch>/wireguard-go` layout matches the Linux job's `prebuilt.path`.
-- [ ] **Action 10.3.3** — verify locally: `goreleaser release --snapshot --clean` (Manual QA — it
-  builds a local multi-arch image; requires buildx/qemu).
+- [ ] **Action 10.3.2** — (removed) — a single `.goreleaser.yaml` now covers all binaries; there is no
+  separate darwin config and no prebuilt import.
+- [ ] **Action 10.3.3** — verify locally: `goreleaser check` validates the config; `goreleaser build
+  --snapshot --clean` builds the binaries (Manual QA).
 
 ### [ ] Task 10.4 — GitHub Actions
 - [ ] **Action 10.4.1** — create `.github/workflows/ci.yml`.
@@ -2623,8 +2590,10 @@ jobs:
       - run: CGO_ENABLED=1 go build ./...
 ```
 
-- [ ] **Action 10.4.2** — create `.github/workflows/release.yml` (two-job split; standard macOS
-  runners are free for public repos, verified).
+- [ ] **Action 10.4.2** — create `.github/workflows/release.yml`: two PARALLEL jobs (standard macOS
+  runners are free for public repos, verified) — `binaries` on macOS (single goreleaser run: all
+  binaries + checksums + GitHub release) and `image` on Linux (`docker/build-push-action` multi-arch
+  build+push to ghcr from the self-contained `Dockerfile`).
 
 ```yaml
 name: Release
@@ -2635,7 +2604,7 @@ permissions:
   contents: write
   packages: write
 jobs:
-  darwin:
+  binaries:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -2647,25 +2616,13 @@ jobs:
       - uses: goreleaser/goreleaser-action@v7.2.3
         with:
           version: "~> v2"
-          args: build --config .goreleaser.darwin.yaml --clean
-      - uses: actions/upload-artifact@v4
-        with:
-          name: darwin-dist
-          path: dist/wireguard-go_darwin_*/wireguard-go
-  release:
-    needs: [darwin]
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v7.0.0
-        with:
-          go-version: stable
-      - uses: actions/download-artifact@v4
-        with:
-          name: darwin-dist
-          path: dist
       - uses: docker/setup-qemu-action@v4.2.0
       - uses: docker/setup-buildx-action@v4.2.0
       - uses: docker/login-action@v4.6.0
@@ -2673,12 +2630,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: goreleaser/goreleaser-action@v7.2.3
+      - uses: docker/build-push-action@v7.3.0
         with:
-          version: "~> v2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/danielealbano/wireguard-go:${{ github.ref_name }}
+            ghcr.io/danielealbano/wireguard-go:latest
 ```
 
   `upload-artifact`/`download-artifact` are pinned to the current `v4` major; the artifact preserves
@@ -2745,5 +2704,26 @@ up (pipeline requires the last item to verify the whole plan). Depends on: US1�
 
 ## Deviations
 
-(Recorded during implementation per agent.md §2. Known at plan time: Action 1.4.3 changes
-`handlePostConfig` to return `error`.)
+(Recorded during implementation per agent.md §2.)
+
+- **Action 1.4.3 — `handlePostConfig` signature change (foreseen):** `ipcSetPeer.handlePostConfig()`
+  now returns `error` (was void) so a WebSocket-endpoint build failure surfaces through
+  `IpcSetOperation`. Propagated at all three call sites (`device/uapi.go` blank-line terminate,
+  `public_key` line, end-of-scan).
+- **P10 packaging — `builder: prebuilt` is goreleaser PRO, not OSS (plan claim corrected).** The plan
+  (and WORK_PLAN) assumed goreleaser's `prebuilt` builder was OSS. Verified against goreleaser v2.17.1:
+  the OSS `Build.Builder` enum is `go,rust,zig,bun,deno,node,uv,poetry` (no `prebuilt`), and the
+  prebuilt builder is documented only in `schema-pro.json`/`pro.md`. The two-job "prebuilt import"
+  approach is therefore not available in OSS. **Replaced with an OSS-only design:** a single
+  `.goreleaser.yaml` (run on the macOS runner) builds ALL binaries — the darwin targets with
+  `CGO_ENABLED=1` (native NWPathMonitor cgo) and the linux/windows/bsd targets cross-compiled with
+  `CGO_ENABLED=0` — plus archives, a unified `checksums.txt`, and the GitHub release; a separate,
+  parallel Linux job builds and pushes the multi-arch container image via `docker/build-push-action`
+  (a self-contained multi-stage `Dockerfile`), so buildx runs on Linux as required.
+  `.goreleaser.darwin.yaml` is removed (a single config now covers all binaries).
+- **Implementation: final code written directly (no stub/replace sequence).** The plan sequenced US1
+  with compiling `Open`/`Close`/`Send` stubs in `ws_bind.go` that US2/US6 would replace. Since the
+  implementation builds once at the end (quality gates), the final files were written directly: the
+  real `Open`/`Close`/`Send` live in `ws_client.go`, `ws_bind.go` carries only the struct + parse/config
+  methods, and the metrics/increment wiring is present from the start rather than added as a later
+  modify. Behaviour is identical to the plan's final state.
