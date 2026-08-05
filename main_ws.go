@@ -35,6 +35,10 @@ func buildWSOptionsFromEnv(logger *device.Logger) ([]conn.WSOption, error) {
 	}
 	opts = append(opts, conn.WithWSRole(role))
 
+	if m := os.Getenv("WG_WS_MASK"); m == "1" || m == "true" {
+		opts = append(opts, conn.WithWSMask(true)) // peer wstunnel server must run --websocket-mask-frame
+	}
+
 	if cert, key := os.Getenv("WG_WS_TLS_CERT"), os.Getenv("WG_WS_TLS_KEY"); cert != "" && key != "" {
 		crt, err := tls.LoadX509KeyPair(cert, key)
 		if err != nil {
