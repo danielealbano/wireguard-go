@@ -55,3 +55,22 @@ jobs:
         with:
           go-version: stable
       - run: CGO_ENABLED=1 go build ./...
+      - run: go test -race ./...
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+      - name: Install wstunnel (pinned + checksum)
+        run: |
+          cd "$(mktemp -d)"
+          url=https://github.com/erebe/wstunnel/releases/download/v10.6.2/wstunnel_10.6.2_linux_amd64.tar.gz
+          curl -fsSL "$url" -o wstunnel.tgz
+          echo "db6064cca0515b67f8652e201cff8e27553b8cbb7216b2e19241311e34868e6e  wstunnel.tgz" | sha256sum -c -
+          tar xzf wstunnel.tgz
+          sudo install -m 0755 wstunnel /usr/local/bin/wstunnel
+          echo "WSTUNNEL_BIN=/usr/local/bin/wstunnel" >> "$GITHUB_ENV"
+      - run: make test-e2e
