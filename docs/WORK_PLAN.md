@@ -92,15 +92,17 @@ not a blocker.
 | `endpoint = ws(s)://host:port/path` | UAPI peer | client | Dial this to reach the peer. In `wstunnel` mode this is the **wstunnel server** URL; the real WireGuard target is `ws_target`. |
 | `ws_mode = standard\|wstunnel` | UAPI peer | client | Dialect bundle (D5). Client-side only — a wireguard-go server is always `standard` (D16). |
 | `ws_target = host:port` | UAPI peer | client | **(`wstunnel` mode only)** the real WireGuard endpoint the wstunnel server forwards UDP to — encoded as the JWT `r`/`rp` (D16). Absent/ignored in `standard` mode. |
-| `ws_bearer = <token>` | UAPI peer (write-only, not echoed) | client | The bearer the **client** presents when dialing (D6). MUST NOT be emitted by `IpcGetOperation` — note `private_key`/`preshared_key` **are** echoed today ([device/uapi.go:89,104](device/uapi.go#L89)), so `ws_bearer` needs the opposite handling. |
+| `ws_bearer = <token>` | UAPI peer | client | The bearer the **client** presents when dialing (D6). **SUPERSEDED:** originally specified as not echoed by `IpcGetOperation`; `ws_bearer` is now echoed by `get=1` for round-trip parity with `private_key`/`preshared_key` (which `get=1` already emits over the same trusted local socket), while remaining never-logged. |
 | `WG_WS_BEARER = <token>` | process (env/flag) | server | The bearer the **server** expects and validates before the WS upgrade (D6); constant-time compared; empty ⇒ gate off. Never logged. Process-level because the check precedes peer identity. |
 | TLS: server `cert`/`key`; client `ca`/`servername`/`insecure` | process (files/flags) | both | `wss` material. Never over UAPI. **Mobile client: system roots only (decided)** — no TLS material crosses UAPI. If ever needed later: an embedder-supplied functional option on the bind, or additive single-line-encoded UAPI keys (e.g. base64-PEM `ws_tls_ca`, `ws_tls_servername`) with any private material write-only like `ws_bearer`. |
 | `ws_ping_interval`, reconnect backoff | process | client | D10. Sane defaults. |
 | trusted-proxy CIDR(s) | process | server | D13. Empty ⇒ `XFF` ignored. |
 | metrics listen address | process | both | D15. Empty ⇒ metrics **off**. |
 
-Secrets (`ws_bearer`, `WG_WS_BEARER`, TLS private key) MUST NEVER appear in logs or `IpcGetOperation`
-output.
+Secrets MUST NEVER appear in logs. `WG_WS_BEARER` and TLS private keys MUST NEVER appear in
+`IpcGetOperation` output either. **SUPERSEDED for `ws_bearer`:** it is now echoed by `get=1` (over the
+trusted local socket, like `private_key`/`preshared_key`) so bearer-authed peers survive a reload —
+while remaining never-logged.
 
 ---
 
@@ -146,10 +148,10 @@ flowchart TD
     ParseEndpoint/SetMark/BatchSize); `ParseEndpoint` accepts `ws(s)://` URLs. `BatchSize` = 1 initially.
   - `conn/default.go` / `main.go`: startup transport switch on `WG_TRANSPORT`; UDP remains default.
   - `device/uapi.go`: accept the additive keys from §4 (device: `ws_listen`; peer: `ws_mode`,
-    `ws_target`, `ws_bearer` write-only, URL `endpoint`); keep unknown-key rejection for everything else.
+    `ws_target`, `ws_bearer`, URL `endpoint`); keep unknown-key rejection for everything else.
   - `go.mod`: add `github.com/gobwas/ws`; `go mod tidy`; `govulncheck`.
 - **Tests:** endpoint parse/round-trip (`ws`/`wss`, path, port); UAPI additive-key parse + `ws_bearer`
-  not echoed by `IpcGet`; transport selection.
+  echoed by `IpcGet` (round-trip); transport selection.
 - **Done when:** device builds and runs with `WG_TRANSPORT=ws` selecting the (not-yet-functional) WS
   bind; config round-trips; all platforms compile.
 
@@ -310,7 +312,9 @@ flowchart TD
   OS-specific or transport-specific logic in the `device` core.
 - **Ordering & locking**: parallel crypto workers + per-peer sequential send/receive are unchanged; run
   all tests with `-race`.
-- **No secrets in logs**: `ws_bearer`, TLS private keys, and any key material never logged or echoed.
+- **No secrets in logs**: `ws_bearer`, TLS private keys, and any key material never logged. (`ws_bearer`
+  is echoed by `get=1` over the trusted local socket, like `private_key`/`preshared_key`; TLS private
+  keys are never echoed.)
 - **Cross-platform builds** (linux, darwin, windows, freebsd, openbsd + mobile) MUST keep compiling;
   build-tag every OS-specific file.
 - **Quality gates** (`go.md` §4) before any phase is "done": build, `go vet`, `golangci-lint`, race
