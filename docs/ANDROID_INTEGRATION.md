@@ -8,8 +8,9 @@ All facts below are verified against the checkouts on disk:
 - **this repo** — `golang.zx2c4.com/wireguard` (wireguard-go), paths linked.
 - **the app** — `../wireguard-android` (sibling checkout), paths given as plain text (outside this workspace).
 
-The changes span **three layers**. Only Layer A is in this repository; Layers B and C are the user's
-forks of wireguard-android and are listed so the interface this repo must expose is unambiguous.
+The changes span **three layers**. Only Layer A is in this repository, and it is **already implemented
+and shipped** (v1.0.0); Layers B and C are the user's forks of wireguard-android and are listed so the
+interface this repo exposes is unambiguous.
 
 ---
 
@@ -82,26 +83,34 @@ Key facts:
 
 ## 3. Changes by layer
 
-### Layer A — wireguard-go (THIS repo; delivered by `docs/WORK_PLAN.md`)
+### Layer A — wireguard-go (THIS repo; IMPLEMENTED — shipped in v1.0.0)
+
+Everything in this layer already exists in-repo; the symbols below are the contract Layers B/C build on.
 
 - **WS bind constructible programmatically.** Android never runs `main.go`; it calls
-  `device.NewDevice(tun, bind, logger)` directly. The WS bind must be creatable the same way, e.g.
-  `conn.NewWebSocketBind(cfg)` (WORK_PLAN P1/P2/P6).
-- **Per-dial protect hook — the one new interface.** The WS client bind MUST accept a protect
-  callback `func(fd int)` (functional option) and invoke it inside `net.Dialer.Control` for **every**
-  dialed socket, before use. This is the sole new cross-language contract Android needs.
+  `device.NewDevice(tun, bind, logger)` directly. The WS bind is built the same way via
+  `conn.NewWebSocketBind(opts ...conn.WSOption)`.
+- **Per-dial protect hook — the one cross-language contract.** The WS client bind accepts a protect
+  callback via the `conn.WithWSProtect(func(fd int))` option
+  ([conn/ws_config.go](../conn/ws_config.go)) and invokes it inside `net.Dialer.Control` for **every**
+  dialed socket, before use (the per-OS `conn/ws_pinning_{linux,darwin,default}.go`). This is the sole
+  new cross-language contract Android needs.
 - **WS config via UAPI.** The additive keys (`ws_listen`, URL `endpoint`, `ws_mode`, `ws_target`,
-  `ws_bearer`, plus any TLS/servername/CA needed by a mobile client) must parse from the settings
-  string in `device/uapi.go` (WORK_PLAN P1), since that is the only channel Android has.
-- **The WS bind MUST NOT implement `conn.PeekLookAtSocketFd`.** With no single persistent socket,
-  `wgGetSocketV4/V6` should simply return `-1` (harmless); protection goes through the per-dial hook.
-- **URL endpoints, resolved at dial time** (WORK_PLAN P2/P4) — not pre-resolved to an IP.
-- **Network-switch bump: nothing new needed.** `device.BindUpdate()` is already exported; the WS
-  bind's `Close`/`Open` implement full teardown/re-arm so a bump = reconnect + re-pin + DNS
-  re-resolve (WORK_PLAN D10/D19/P4). In-process netlink is NOT an option on Android: apps targeting
-  API 30+ can't `bind()` `NETLINK_ROUTE` sockets nor send `RTM_GETLINK`
-  (developer.android.com/training/articles/user-data-ids), so the signal must come from the app.
-- **TLS: system roots only** (decided) — no TLS material crosses UAPI (WORK_PLAN §4, TLS row).
+  `ws_bearer`) parse from the settings string in [device/uapi.go](../device/uapi.go), the only channel
+  Android has.
+- **The WS bind does not implement `conn.PeekLookAtSocketFd`.** With no single persistent socket,
+  `wgGetSocketV4/V6` simply return `-1` (harmless); protection goes through the per-dial hook.
+- **URL endpoints, resolved at dial time** ([conn/ws_dial.go](../conn/ws_dial.go)) — not pre-resolved
+  to an IP.
+- **Network-switch bump: nothing new needed in this repo.** `device.BindUpdate()` is exported
+  ([device/device.go](../device/device.go)) and the WS bind's `Close`/`Open` implement full
+  teardown/re-arm, so a bump = reconnect + re-pin + DNS re-resolve. On the standalone daemon the bump
+  is driven by the in-repo OS path monitor `conn.WSPathMonitor` / `conn.NewWSPathMonitor`
+  ([conn/ws_pathmonitor.go](../conn/ws_pathmonitor.go); linux netlink, darwin `NWPathMonitor`) — the
+  desktop counterpart the Android app reimplements with `ConnectivityManager`. In-process netlink is
+  NOT an option on Android: apps targeting API 30+ cannot use an unprivileged `NETLINK_ROUTE` route
+  dump, so the network-change signal must come from the app.
+- **TLS: system roots only** — no TLS material crosses UAPI.
 
 ### Layer B — libwg-go (`../wireguard-android/tunnel/tools/libwg-go`; user's fork)
 
@@ -130,7 +139,8 @@ Key facts:
   `service.protect(wgGetSocketV4/V6(...))` (`GoBackend.java:349-350`) for WS tunnels — those now
   return `-1`. Keep them for the UDP path.
 - **Register a `ConnectivityManager.registerNetworkCallback()`** and call the bump export on network
-  change — the Android delivery of what the Apple app does with `NWPathMonitor` (WORK_PLAN D10/D19).
+  change — the Android delivery of what the standalone daemon does in-repo with `conn.WSPathMonitor`
+  ([conn/ws_pathmonitor.go](../conn/ws_pathmonitor.go)) and what the Apple app does with `NWPathMonitor`.
 - **UI** — a way to enter the WS transport, server URL, mode, target, and bearer.
 
 ---
