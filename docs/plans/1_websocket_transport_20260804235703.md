@@ -2721,6 +2721,18 @@ up (pipeline requires the last item to verify the whole plan). Depends on: US1â€
   parallel Linux job builds and pushes the multi-arch container image via `docker/build-push-action`
   (a self-contained multi-stage `Dockerfile`), so buildx runs on Linux as required.
   `.goreleaser.darwin.yaml` is removed (a single config now covers all binaries).
+- **`SetWSListen` + server `listenURL` synchronization (US1/US6).** `cfg.listenURL` is mutated by
+  `SetWSListen` (a `ws_listen=` UAPI line triggers `BindUpdate`) and read by `openServer`, which can run
+  concurrently. `SetWSListen` now writes it under `b.mu`, and `openServer` (called from `Open` under
+  `b.mu`) snapshots it into a local so the serve goroutine never touches the field. `-race` clean.
+- **Darwin egress pinning skips loopback (US5).** The darwin `dialControl` skips `IP_BOUND_IF` for
+  loopback destinations (`wsIsLoopback` in `conn/ws_iface_darwin.go`): pinning a loopback dial to the
+  physical egress interface makes the connect fail (`can't assign requested address`). This is correct
+  in production (loopback never loops into the tun) and is required for the loopback tunnel tests.
+- **CI Android job compiles the library packages, not `./...` (US9/US10).** An android executable for
+  `arm`/`amd64` requires external cgo linking; since Android consumes this repo as a Go module (no
+  standalone daemon, D18), the `android` CI job compile-checks the library packages and excludes the
+  root `main` package.
 - **Implementation: final code written directly (no stub/replace sequence).** The plan sequenced US1
   with compiling `Open`/`Close`/`Send` stubs in `ws_bind.go` that US2/US6 would replace. Since the
   implementation builds once at the end (quality gates), the final files were written directly: the
