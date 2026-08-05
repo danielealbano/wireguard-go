@@ -14,9 +14,9 @@ import (
 
 // Concurrency contract (avoids send-on-closed-channel panics):
 //   - b.inbound is NEVER closed. Shutdown is signalled by closing b.done.
-//   - Every read/ping loop registers on b.readWG; Close closes b.done, CloseNow's
-//     the sockets to unblock reads, then b.readWG.Wait() joins all producers BEFORE
-//     returning — no leak across Close/Open (BindUpdate) cycles.
+//   - Every read/ping loop registers on b.readWG; Close closes b.done, closes the
+//     net.Conns to unblock the blocked reads, then b.readWG.Wait() joins all producers
+//     BEFORE returning — no leak across Close/Open (BindUpdate) cycles.
 
 func (b *WebSocketBind) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	b.mu.Lock()
@@ -134,7 +134,7 @@ func (b *WebSocketBind) Close() error {
 	b.closed = true
 	close(b.done) // unblocks every ReceiveFunc with net.ErrClosed
 	if b.ctxCancel != nil {
-		b.ctxCancel() // unblocks all read loops (they read with the per-conn ctx)
+		b.ctxCancel() // stops the ping loops (they wait on the per-conn ctx); the read loops are unblocked by the conn.Close() calls below
 	}
 	srv := b.srv
 	// Detach the registries under the lock BEFORE ranging them: the read loops we
