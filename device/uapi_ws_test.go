@@ -312,7 +312,7 @@ func TestUAPI_Get_WSKeys_RoundTrip(t *testing.T) {
 	wsLines := func(s string) []string {
 		var out []string
 		for _, l := range strings.Split(s, "\n") {
-			if strings.HasPrefix(l, "ws_") || strings.HasPrefix(l, "endpoint=") {
+			if strings.HasPrefix(l, "ws_") || strings.HasPrefix(l, "wstunnel_target=") || strings.HasPrefix(l, "endpoint=") {
 				out = append(out, l)
 			}
 		}
