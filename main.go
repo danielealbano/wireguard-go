@@ -222,12 +222,37 @@ func main() {
 		return
 	}
 
-	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger)
+	transport := os.Getenv("WG_TRANSPORT")
+	wsOpts, err := buildWSOptionsFromEnv(logger)
+	if err != nil {
+		logger.Errorf("Invalid websocket configuration: %v", err)
+		os.Exit(ExitSetupFailed)
+	}
+	bind, err := conn.NewBindForTransport(transport, wsOpts...)
+	if err != nil {
+		logger.Errorf("Invalid WG_TRANSPORT: %v", err)
+		os.Exit(ExitSetupFailed)
+	}
+
+	device := device.NewDevice(tdev, bind, logger)
 
 	logger.Verbosef("Device started")
 
 	errs := make(chan error)
 	term := make(chan os.Signal, 1)
+
+	// Standalone network-switch detection: drive BindUpdate from OS path changes
+	// (WebSocket transport only; embedded apps drive BindUpdate themselves).
+	var pathMonitor conn.WSPathMonitor
+	if transport == "ws" {
+		pathMonitor = conn.NewWSPathMonitor(conn.Logger{Verbosef: logger.Verbosef, Errorf: logger.Errorf})
+		if err := pathMonitor.Start(func() { _ = device.BindUpdate() }); err != nil {
+			logger.Errorf("Failed to start path monitor: %v", err)
+		}
+	}
+
+	// Optional Prometheus metrics listener (off unless WG_METRICS_LISTEN is set).
+	metricsCancel := startMetrics(logger, device, bind)
 
 	uapi, err := ipc.UAPIListen(interfaceName, fileUAPI)
 	if err != nil {
@@ -261,6 +286,10 @@ func main() {
 
 	// clean up
 
+	if pathMonitor != nil {
+		pathMonitor.Close()
+	}
+	metricsCancel()
 	uapi.Close()
 	device.Close()
 
