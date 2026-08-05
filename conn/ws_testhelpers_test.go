@@ -6,13 +6,15 @@
 package conn_test
 
 import (
+	"bufio"
 	"bytes"
-	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -21,38 +23,44 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/gobwas/ws"
 	"golang.org/x/crypto/curve25519"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 )
 
-// wsBridge is a test WebSocket relay. In relay mode it pairs the first two accepted
-// connections and forwards every binary message from each to the other, so two
-// client-role WebSocketBinds dialing it tunnel end-to-end. In echo mode it reflects
-// frames back (dial/upgrade unit checks). It tracks accepted connections so a test
-// can force-drop them (reconnect tests).
+// wsBridge is a test WebSocket relay built on gobwas/ws. In relay mode it pairs the
+// first two accepted connections and forwards every binary message from each to the
+// other; in echo mode it reflects frames back. It accepts masked or unmasked client
+// frames and always writes UNMASKED (mirroring a default wstunnel server). It answers
+// pings with pongs. Accepted peers are tracked so a test can force-drop them.
+type wsPeer struct {
+	conn net.Conn
+	wmu  sync.Mutex // serialises writes: relay (other goroutine) + ping-reply (own goroutine)
+}
+
 type wsBridge struct {
 	srv  *httptest.Server
 	echo bool
 
 	mu    sync.Mutex
-	peers []*websocket.Conn
+	peers []*wsPeer
 }
 
 func newWSBridge(t *testing.T, useTLS, echo bool) *wsBridge {
 	t.Helper()
 	b := &wsBridge{echo: echo}
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := websocket.Accept(w, r, nil)
+		c, rw, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
 			return
 		}
+		p := &wsPeer{conn: c}
 		b.mu.Lock()
-		b.peers = append(b.peers, c)
+		b.peers = append(b.peers, p)
 		b.mu.Unlock()
-		b.serve(c)
+		b.serve(p, rw.Reader)
 	})
 	if useTLS {
 		b.srv = httptest.NewTLSServer(h)
@@ -63,31 +71,53 @@ func newWSBridge(t *testing.T, useTLS, echo bool) *wsBridge {
 	return b
 }
 
-func (b *wsBridge) serve(c *websocket.Conn) {
-	ctx := context.Background()
-	c.SetReadLimit(1 << 20) // allow oversize frames so the client-side guard is what drops them
+func (p *wsPeer) write(op ws.OpCode, payload []byte) {
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
+	_ = ws.WriteFrame(p.conn, ws.NewFrame(op, true, payload))
+}
+
+func (b *wsBridge) serve(p *wsPeer, r *bufio.Reader) {
+	const bridgeReadLimit = 1 << 20 // trusted test frames; bounds allocation
 	for {
-		typ, data, err := c.Read(ctx)
-		if err != nil {
+		h, err := ws.ReadHeader(r)
+		if err != nil || h.Length > bridgeReadLimit {
 			return
 		}
-		if typ != websocket.MessageBinary {
+		payload := make([]byte, h.Length)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return
+		}
+		if h.Masked {
+			ws.Cipher(payload, h.Mask, 0)
+		}
+		switch h.OpCode {
+		case ws.OpPing:
+			p.write(ws.OpPong, payload)
+			continue
+		case ws.OpPong:
+			continue
+		case ws.OpClose:
+			return
+		case ws.OpBinary:
+			// fall through to relay/echo
+		default:
 			continue
 		}
 		if b.echo {
-			_ = c.Write(ctx, websocket.MessageBinary, data)
+			p.write(ws.OpBinary, payload)
 			continue
 		}
 		b.mu.Lock()
-		var other *websocket.Conn
-		for _, p := range b.peers {
-			if p != c {
-				other = p
+		var other *wsPeer
+		for _, q := range b.peers {
+			if q != p {
+				other = q
 			}
 		}
 		b.mu.Unlock()
 		if other != nil {
-			_ = other.Write(ctx, websocket.MessageBinary, data)
+			other.write(ws.OpBinary, payload)
 		}
 	}
 }
@@ -100,7 +130,7 @@ func (b *wsBridge) dropAll() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, p := range b.peers {
-		_ = p.CloseNow()
+		_ = p.conn.Close()
 	}
 	b.peers = nil
 }
@@ -114,20 +144,54 @@ func (b *wsBridge) clientTLS() *tls.Config {
 	return &tls.Config{RootCAs: cp}
 }
 
-// newWSSilentServer accepts WebSocket upgrades but never reads, so it never sends
-// automatic pong replies — used to exercise the client ping-timeout backstop.
+// newWSSilentServer upgrades then drains without ever ponging, so the client ping
+// backstop must time out and reconnect.
 func newWSSilentServer(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := websocket.Accept(w, r, nil)
+		c, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
 			return
 		}
-		<-r.Context().Done()
-		_ = c.CloseNow()
+		_, _ = io.Copy(io.Discard, c) // never parses/pongs; returns when the client closes
+		_ = c.Close()
 	}))
 	t.Cleanup(srv.Close)
 	return "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+// newWSMaskProbe upgrades one client and reports the mask bit of the first binary
+// frame it receives, so a test can assert the client bind's masking behaviour
+// (unmasked by default; masked with WithWSMask(true)).
+func newWSMaskProbe(t *testing.T) (url string, masked <-chan bool) {
+	t.Helper()
+	ch := make(chan bool, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, rw, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			h, err := ws.ReadHeader(rw.Reader)
+			if err != nil {
+				return
+			}
+			payload := make([]byte, h.Length)
+			if _, err := io.ReadFull(rw.Reader, payload); err != nil {
+				return
+			}
+			if h.OpCode == ws.OpBinary {
+				select {
+				case ch <- h.Masked:
+				default:
+				}
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http"), ch
 }
 
 // wgKeypair returns a clamped Curve25519 private key and its public key, hex-encoded.

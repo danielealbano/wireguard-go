@@ -6,6 +6,7 @@
 package conn_test
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -17,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/gobwas/ws"
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
@@ -45,8 +46,16 @@ func openServerBind(t *testing.T, opts ...conn.WSOption) (*conn.WebSocketBind, c
 	return b, fns[0], url
 }
 
-// rawDial connects a plain WebSocket client and returns it, writing an optional bearer.
-func rawDial(t *testing.T, url, bearer string) *websocket.Conn {
+// rawWSClient is a raw gobwas WebSocket client used to drive the server bind directly.
+// mask selects whether its data frames are masked (default unmasked, like wstunnel).
+type rawWSClient struct {
+	conn net.Conn
+	br   *bufio.Reader
+	mask bool
+}
+
+// rawDial connects a plain WebSocket client, writing an optional bearer.
+func rawDial(t *testing.T, url, bearer string, mask bool) *rawWSClient {
 	t.Helper()
 	hdr := http.Header{}
 	if bearer != "" {
@@ -54,12 +63,22 @@ func rawDial(t *testing.T, url, bearer string) *websocket.Conn {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: hdr})
+	c, br, _, err := ws.Dialer{Header: ws.HandshakeHeaderHTTP(hdr)}.Dial(ctx, url)
 	if err != nil {
 		t.Fatalf("raw dial: %v", err)
 	}
-	t.Cleanup(func() { _ = c.CloseNow() })
-	return c
+	t.Cleanup(func() { _ = c.Close() })
+	return &rawWSClient{conn: c, br: br, mask: mask}
+}
+
+// writeBinary sends one binary frame, masked per c.mask (copying first when masking,
+// because MaskFrameInPlace mutates the payload).
+func (c *rawWSClient) writeBinary(payload []byte) error {
+	if c.mask {
+		p := append([]byte(nil), payload...)
+		return ws.WriteFrame(c.conn, ws.MaskFrameInPlace(ws.NewBinaryFrame(p)))
+	}
+	return ws.WriteFrame(c.conn, ws.NewBinaryFrame(payload))
 }
 
 // recvEndpoint drains one message from the server ReceiveFunc and returns its endpoint.
@@ -221,16 +240,15 @@ func TestWSServer_CloseShutsDown(t *testing.T) {
 
 func TestWSServer_PerClientDstIdentity(t *testing.T) {
 	_, fn, url := openServerBind(t)
-	ctx := context.Background()
 
-	c1 := rawDial(t, url, "")
-	if err := c1.Write(ctx, websocket.MessageBinary, []byte{1}); err != nil {
+	c1 := rawDial(t, url, "", false)
+	if err := c1.writeBinary([]byte{1}); err != nil {
 		t.Fatalf("c1 write: %v", err)
 	}
 	ep1 := recvEndpoint(t, fn)
 
-	c2 := rawDial(t, url, "")
-	if err := c2.Write(ctx, websocket.MessageBinary, []byte{2}); err != nil {
+	c2 := rawDial(t, url, "", false)
+	if err := c2.writeBinary([]byte{2}); err != nil {
 		t.Fatalf("c2 write: %v", err)
 	}
 	ep2 := recvEndpoint(t, fn)
@@ -247,19 +265,18 @@ func TestWSServer_PerClientDstIdentity(t *testing.T) {
 
 func TestWSServer_Roaming(t *testing.T) {
 	b, fn, url := openServerBind(t)
-	ctx := context.Background()
 
-	c1 := rawDial(t, url, "")
-	if err := c1.Write(ctx, websocket.MessageBinary, []byte{1}); err != nil {
+	c1 := rawDial(t, url, "", false)
+	if err := c1.writeBinary([]byte{1}); err != nil {
 		t.Fatalf("c1 write: %v", err)
 	}
 	oldEP := recvEndpoint(t, fn)
 
 	// Reconnect on a new TCP connection (roaming): the server allocates a new
 	// connection id, so a Send to the new endpoint succeeds while the old one fails.
-	_ = c1.CloseNow()
-	c2 := rawDial(t, url, "")
-	if err := c2.Write(ctx, websocket.MessageBinary, []byte{2}); err != nil {
+	_ = c1.conn.Close()
+	c2 := rawDial(t, url, "", false)
+	if err := c2.writeBinary([]byte{2}); err != nil {
 		t.Fatalf("c2 write: %v", err)
 	}
 	newEP := recvEndpoint(t, fn)
@@ -288,14 +305,17 @@ func TestWSServer_BearerNotLogged(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	// Rejected upgrade (wrong bearer) and an accepted one (correct bearer).
-	if c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Authorization": []string{"Bearer wrong"}},
-	}); err == nil {
-		_ = c.CloseNow()
+	badConn, _, _, err := ws.Dialer{
+		Header: ws.HandshakeHeaderHTTP(http.Header{"Authorization": []string{"Bearer wrong"}}),
+	}.Dial(ctx, url)
+	if badConn != nil {
+		_ = badConn.Close()
+	}
+	if err == nil {
 		t.Fatal("upgrade with wrong bearer should be rejected")
 	}
-	okc := rawDial(t, url, secret)
-	_ = okc.Write(ctx, websocket.MessageBinary, []byte{1})
+	okc := rawDial(t, url, secret, false)
+	_ = okc.writeBinary([]byte{1})
 	time.Sleep(100 * time.Millisecond)
 
 	mu.Lock()
