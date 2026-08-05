@@ -3373,7 +3373,7 @@ real-wstunnel interop.
 
 ---
 
-## [ ] US13 — Test coverage: UDP in-process tunnel, in-process wstunnel integration, Go netns e2e (P13)
+## [x] US13 — Test coverage: UDP in-process tunnel, in-process wstunnel integration, Go netns e2e (P13)
 
 **Why:** The automated suite fakes the network and only exercised standard-WS mode, so it never spoke real
 wstunnel and never moved a packet through a real TUN — which is why the masking (US12) and `/v1/events`
@@ -3400,19 +3400,19 @@ Depends on: US1–US12.
   wstunnel and runs `make test-e2e`.
 
 **Acceptance criteria:**
-- [ ] `conn` has a real-UDP two-device tunnel test (handshake + ping) analogous to `ws_tunnel_test.go`.
-- [ ] `conn` has an in-process wstunnel-mode integration test: unmasked-default client handshakes through a
+- [x] `conn` has a real-UDP two-device tunnel test (handshake + ping) analogous to `ws_tunnel_test.go`.
+- [x] `conn` has an in-process wstunnel-mode integration test: unmasked-default client handshakes through a
       fake default wstunnel; a masked client against that same fake does NOT (regression guard for US12);
       a masked client against a `--websocket-mask-frame` fake DOES; the default (pathless) endpoint targets
       `/v1/events`.
-- [ ] `tests/e2e/` runs the real daemon over netns for UDP, WS (wss), and wstunnel (real binary), asserting
+- [x] `tests/e2e/` runs the real daemon over netns for UDP, WS (wss), and wstunnel (real binary), asserting
       handshake + ping; skips cleanly when not Linux+root.
-- [ ] `tests/netns.sh` is removed; `make test-e2e` runs the Go e2e; `darwin` CI job runs the test suite.
-- [ ] CI has a parallel privileged `e2e` job; every CI job runs in parallel (no `needs:`).
-- [ ] All quality gates pass; the e2e package compiles for `GOOS=linux` under `-tags=e2e`.
+- [x] `tests/netns.sh` is removed; `make test-e2e` runs the Go e2e; `darwin` CI job runs the test suite.
+- [x] CI has a parallel privileged `e2e` job; every CI job runs in parallel (no `needs:`).
+- [x] All quality gates pass; the e2e package compiles for `GOOS=linux` under `-tags=e2e`.
 
-### [ ] Task 13.1 — Tier-1: real-UDP in-process tunnel test
-- [ ] **Action 13.1.1** — create `conn/udp_tunnel_test.go` (`package conn_test`) with a `newUDPDevicePair`
+### [x] Task 13.1 — Tier-1: real-UDP in-process tunnel test
+- [x] **Action 13.1.1** — create `conn/udp_tunnel_test.go` (`package conn_test`) with a `newUDPDevicePair`
   helper (the UDP analogue of `newWSDevicePair`) and the tunnel test. Two devices on real loopback UDP
   binds; `Open(0)` returns each actual port; cross-configure endpoints; assert a ping transits both ways
   via `wsAssertPing` (reused from `ws_testhelpers_test.go`).
@@ -3488,14 +3488,14 @@ func listenPortOf(t *testing.T, d *device.Device) int {
 
   - `splitLines`/`cutPrefix`/`atoi` are tiny local helpers (or use `strings.Split`/`strings.CutPrefix`/
     `strconv.Atoi` inline — implementer's choice; keep imports honest).
-- [ ] **Action 13.1.2** — add the UDP tunnel test (compressed format).
+- [x] **Action 13.1.2** — add the UDP tunnel test (compressed format).
 
 | Test | Wiring | Asserts |
 |---|---|---|
 | `TestUDPClient_Handshake` | `newUDPDevicePair` — two devices on real loopback UDP binds | a ping transits both ways (`wsAssertPing` A→B and B→A) |
 
-### [ ] Task 13.2 — Tier-1: in-process fake wstunnel + wstunnel-mode integration
-- [ ] **Action 13.2.1** — create `conn/wstunnel_relay_test.go` (`package conn_test`) with the fake wstunnel
+### [x] Task 13.2 — Tier-1: in-process fake wstunnel + wstunnel-mode integration
+- [x] **Action 13.2.1** — create `conn/wstunnel_relay_test.go` (`package conn_test`) with the fake wstunnel
   relay (foundational shared harness — shown IN FULL per §3). It accepts the WS upgrade **only at
   `/v1/events`** (a wrong prefix ⇒ 404), decodes the UDP target from the JWT in the `Sec-WebSocket-Protocol`
   header, and relays WS binary frames ⇄ a UDP socket to that target. It **unmasks client frames only when
@@ -3635,7 +3635,7 @@ func (f *fakeWstunnel) relay(c net.Conn, br *bufio.Reader, target string) {
 }
 ```
 
-- [ ] **Action 13.2.2** — add the wstunnel-mode integration tests (compressed format). They reuse
+- [x] **Action 13.2.2** — add the wstunnel-mode integration tests (compressed format). They reuse
   `wgKeypair`, `wsAssertPing`, and a small `newUDPServerDevice` helper (a `device.Device` on a
   `conn.NewDefaultBind()` whose actual UDP port is read back via `listenPortOf`), and a `newWSClientDevice`
   helper (a `device.Device` on a `conn.NewWebSocketBind(client, opts…)` configured in wstunnel mode with
@@ -3649,8 +3649,8 @@ func (f *fakeWstunnel) relay(c net.Conn, br *bufio.Reader, target string) {
 | `TestWstunnelMode_MaskedVsMaskingServer_Handshake` | client(`WithWSMask(true)`) → `fakeWstunnel(unmask:true)` → udp server | ping transits (masking works when the server unmasks) |
 | `TestWstunnelMode_WrongPrefix_NoHandshake` | client with endpoint `<fake>/wrong` (→ `/wrong/events`) | ping does NOT transit (fake serves only `/v1/events`) — guards the prefix contract |
 
-### [ ] Task 13.3 — Tier-2: netns e2e harness (Linux)
-- [ ] **Action 13.3.1** — create `tests/e2e/doc.go` (NO build tag) so `go build ./...` sees a buildable
+### [x] Task 13.3 — Tier-2: netns e2e harness (Linux)
+- [x] **Action 13.3.1** — create `tests/e2e/doc.go` (NO build tag) so `go build ./...` sees a buildable
   package on every platform:
 
 ```go
@@ -3658,7 +3658,7 @@ func (f *fakeWstunnel) relay(c net.Conn, br *bufio.Reader, target string) {
 package e2e
 ```
 
-- [ ] **Action 13.3.2** — create `tests/e2e/harness_test.go` (`//go:build linux && e2e`) — the shared netns
+- [x] **Action 13.3.2** — create `tests/e2e/harness_test.go` (`//go:build linux && e2e`) — the shared netns
   lab (shown IN FULL per §3). It shells out to `ip`/`unshare`, tracks created namespaces + spawned
   daemons, and cleans up via `t.Cleanup`. The daemon's UAPI socket lives on the shared filesystem
   (`/var/run/wireguard/<iface>.sock`), so the test writes config to it directly from the root namespace.
@@ -3868,17 +3868,17 @@ func hexKey(b []byte) string { return fmt.Sprintf("%x", b) }
 func itoa(i int) string      { return strconv.Itoa(i) }
 ```
 
-- [ ] **Action 13.3.3** — create `tests/e2e/keys_test.go` (`//go:build linux && e2e`): a `genKeypair`
+- [x] **Action 13.3.3** — create `tests/e2e/keys_test.go` (`//go:build linux && e2e`): a `genKeypair`
   helper returning a clamped Curve25519 private key + public key as **hex** (via `golang.org/x/crypto/
   curve25519`, already a dependency), for UAPI `private_key=`/`public_key=`. Mirror the clamping in
   `conn/ws_testhelpers_test.go`'s `wgKeypair` (private hex, public hex).
-- [ ] **Action 13.3.4** — create `tests/e2e/tls_test.go` (`//go:build linux && e2e`): a `genServerCert`
+- [x] **Action 13.3.4** — create `tests/e2e/tls_test.go` (`//go:build linux && e2e`): a `genServerCert`
   helper that generates a self-signed P-256 cert with an IP SAN (for the WS wss server), writes
   `cert.pem`/`key.pem` to `t.TempDir()`, and returns their paths (used by the WS e2e via
   `WG_WS_TLS_CERT`/`WG_WS_TLS_KEY`, trusted by the client via `WG_WS_TLS_CA`).
 
-### [ ] Task 13.4 — Tier-2: e2e tests (UDP / WS / wstunnel)
-- [ ] **Action 13.4.1** — create `tests/e2e/e2e_test.go` (`//go:build linux && e2e`) with the three tests
+### [x] Task 13.4 — Tier-2: e2e tests (UDP / WS / wstunnel)
+- [x] **Action 13.4.1** — create `tests/e2e/e2e_test.go` (`//go:build linux && e2e`) with the three tests
   (compressed format). All build a bridge + namespaces, start real daemons, configure via UAPI + `ifup`,
   and assert `l.ping(...)`. Underlay subnet `10.9.0.0/24`; tunnel subnet `10.10.0.0/24`.
 
@@ -3896,8 +3896,8 @@ func itoa(i int) string      { return strconv.Itoa(i) }
     ROLE, not a literal interface name).
   - `TestE2E_Wstunnel` and `TestE2E_WebSocket` derive server IP SANs from the fixed underlay addresses.
 
-### [ ] Task 13.5 — Makefile + delete netns.sh
-- [ ] **Action 13.5.1** — modify `Makefile` `test-e2e` to build the binary and run the Go e2e as root via
+### [x] Task 13.5 — Makefile + delete netns.sh
+- [x] **Action 13.5.1** — modify `Makefile` `test-e2e` to build the binary and run the Go e2e as root via
   a compiled test binary (`go test -c` as the normal user; the binary runs under `sudo -E` so `go`
   need not be in root's PATH):
 
@@ -3913,11 +3913,11 @@ test-e2e: wireguard-go
   (`t.Fatal`) when `WG_GO_BIN` or `WSTUNNEL_BIN` is missing, so a stripped or missing env is a HARD
   failure (or a loud `sudo` rejection) — never a silent all-skip false-green.
 
-- [ ] **Action 13.5.2** — delete `tests/netns.sh` (replaced by `tests/e2e/`; user-approved). Update the
+- [x] **Action 13.5.2** — delete `tests/netns.sh` (replaced by `tests/e2e/`; user-approved). Update the
   `.PHONY`/comments in the `Makefile` if they reference it.
 
-### [ ] Task 13.6 — CI: parallel e2e job + darwin tests
-- [ ] **Action 13.6.1** — modify `.github/workflows/ci.yml`: add a new **`e2e`** job (parallel, NO `needs:`)
+### [x] Task 13.6 — CI: parallel e2e job + darwin tests
+- [x] **Action 13.6.1** — modify `.github/workflows/ci.yml`: add a new **`e2e`** job (parallel, NO `needs:`)
   on `ubuntu-latest` that checks out, sets up Go, builds `wireguard-go` (`make`/`go build -o wireguard-go .`),
   downloads wstunnel **v10.6.2 linux_amd64** and verifies its SHA-256
   `db6064cca0515b67f8652e201cff8e27553b8cbb7216b2e19241311e34868e6e`, exports `WSTUNNEL_BIN`, and runs
@@ -3943,13 +3943,13 @@ test-e2e: wireguard-go
       - run: make test-e2e
 ```
 
-- [ ] **Action 13.6.2** — modify the `darwin` job: after the build step, add `- run: go test -race ./...`
+- [x] **Action 13.6.2** — modify the `darwin` job: after the build step, add `- run: go test -race ./...`
   (Tier-1 runtime coverage on macOS, incl. the darwin-tagged pinning/path-monitor tests). Keep it parallel.
-- [ ] **Action 13.6.3** — confirm NO job declares `needs:` (all jobs run in parallel): `quality`, `mermaid`,
+- [x] **Action 13.6.3** — confirm NO job declares `needs:` (all jobs run in parallel): `quality`, `mermaid`,
   `android`, `darwin`, `e2e`.
 
-### [ ] Task 13.7 — Docs + ground-up double-check (plan-final gate)
-- [ ] **Action 13.7.1** — update the canonical docs to reflect the new test topology so NO reference to
+### [x] Task 13.7 — Docs + ground-up double-check (plan-final gate)
+- [x] **Action 13.7.1** — update the canonical docs to reflect the new test topology so NO reference to
   the deleted `tests/netns.sh` survives:
   - `docs/PROJECT.md` **Testing section** (in-process UDP/WS/wstunnel integration + Go netns e2e;
     `netns.sh` removed; `WG_GO_BIN`/`WSTUNNEL_BIN`) AND its **Repository Layout table** — remove the
@@ -3960,16 +3960,16 @@ test-e2e: wireguard-go
     reflect that this repo's e2e uses `//go:build linux && e2e` under `tests/e2e/` (no `netns.sh`).
   - Verify with a repo-scoped `git grep -n 'netns.sh'` returning nothing outside this plan's history.
   No Mermaid charts are added, so no `mermaid-check` step is required for US13.
-- [ ] **Action 13.7.2** — re-read US13; confirm every action landed and every acceptance criterion is
+- [x] **Action 13.7.2** — re-read US13; confirm every action landed and every acceptance criterion is
   checked; confirm `tests/netns.sh` is gone and nothing references it.
-- [ ] **Action 13.7.3** — run the FULL quality gates (project commands, ONLY here): `make vet`, `make lint`,
+- [x] **Action 13.7.3** — run the FULL quality gates (project commands, ONLY here): `make vet`, `make lint`,
   `go build ./...`, `make test` (`-race`; includes the new Tier-1 UDP + wstunnel integration tests),
   `make tidy` (NO diff), `make vulncheck`. Capture each long run through `tee` to `/tmp/wireguard-go-<gate>.log`.
-- [ ] **Action 13.7.4** — e2e compiles for its target without executing on non-Linux: `GOOS=linux go vet
+- [x] **Action 13.7.4** — e2e compiles for its target without executing on non-Linux: `GOOS=linux go vet
   -tags=e2e ./tests/e2e/` MUST pass. Where a privileged Linux environment is available (e.g. a
   `--privileged` container or the CI `e2e` job), `make test-e2e` MUST pass for UDP, WS, and wstunnel; on a
   non-Linux dev host the netns e2e is validated by compilation + the CI job.
-- [ ] **Action 13.7.5** — cross-platform compile matrix (as US12): `GOOS in {linux,darwin,windows,freebsd,
+- [x] **Action 13.7.5** — cross-platform compile matrix (as US12): `GOOS in {linux,darwin,windows,freebsd,
   openbsd}` `go build ./...` + `GOOS=android` lib build + `GOOS=darwin` cgo build. gobwas + the new tests
   are pure Go; every target MUST resolve.
 
