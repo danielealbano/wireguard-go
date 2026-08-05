@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ipc"
 )
 
@@ -155,8 +156,7 @@ func (device *Device) IpcSetOperation(r io.Reader) (err error) {
 		line := scanner.Text()
 		if line == "" {
 			// Blank line means terminate operation.
-			peer.handlePostConfig()
-			return nil
+			return peer.handlePostConfig()
 		}
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
@@ -167,7 +167,9 @@ func (device *Device) IpcSetOperation(r io.Reader) (err error) {
 			if deviceConfig {
 				deviceConfig = false
 			}
-			peer.handlePostConfig()
+			if err := peer.handlePostConfig(); err != nil {
+				return err
+			}
 			// Load/create the peer we are now configuring.
 			err := device.handlePublicKeyLine(peer, value)
 			if err != nil {
@@ -186,7 +188,9 @@ func (device *Device) IpcSetOperation(r io.Reader) (err error) {
 			return err
 		}
 	}
-	peer.handlePostConfig()
+	if err := peer.handlePostConfig(); err != nil {
+		return err
+	}
 
 	if err := scanner.Err(); err != nil {
 		return ipcErrorf(ipc.IpcErrorIO, "failed to read input: %w", err)
@@ -233,6 +237,19 @@ func (device *Device) handleDeviceLine(key, value string) error {
 			return ipcErrorf(ipc.IpcErrorPortInUse, "failed to update fwmark: %w", err)
 		}
 
+	case "ws_listen":
+		binder, ok := device.net.bind.(conn.WebSocketBinder)
+		if !ok {
+			return ipcErrorf(ipc.IpcErrorInvalid, "ws_listen requires the websocket transport")
+		}
+		device.log.Verbosef("UAPI: Updating websocket listen address")
+		if err := binder.SetWSListen(value); err != nil {
+			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set ws_listen: %w", err)
+		}
+		if err := device.BindUpdate(); err != nil {
+			return ipcErrorf(ipc.IpcErrorPortInUse, "failed to set ws_listen: %w", err)
+		}
+
 	case "replace_peers":
 		if value != "true" {
 			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set replace_peers, invalid value: %v", value)
@@ -249,15 +266,34 @@ func (device *Device) handleDeviceLine(key, value string) error {
 
 // An ipcSetPeer is the current state of an IPC set operation on a peer.
 type ipcSetPeer struct {
-	*Peer        // Peer is the current peer being operated on
-	dummy   bool // dummy reports whether this peer is a temporary, placeholder peer
-	created bool // new reports whether this is a newly created peer
-	pkaOn   bool // pkaOn reports whether the peer had the persistent keepalive turn on
+	*Peer         // Peer is the current peer being operated on
+	dummy   bool  // dummy reports whether this peer is a temporary, placeholder peer
+	created bool  // new reports whether this is a newly created peer
+	pkaOn   bool  // pkaOn reports whether the peer had the persistent keepalive turn on
+	// WebSocket peer keys, collected across lines and consumed in handlePostConfig.
+	// Reset per peer in handlePublicKeyLine so peer N never inherits peer N-1's values.
+	wsEndpointURL string
+	wsMode        string
+	wsTarget      string
+	wsBearer      string
 }
 
-func (peer *ipcSetPeer) handlePostConfig() {
+func (peer *ipcSetPeer) handlePostConfig() error {
 	if peer.Peer == nil || peer.dummy {
-		return
+		return nil
+	}
+	if peer.wsEndpointURL != "" {
+		binder, ok := peer.device.net.bind.(conn.WebSocketBinder)
+		if !ok {
+			return ipcErrorf(ipc.IpcErrorInvalid, "websocket endpoint requires the websocket transport")
+		}
+		endpoint, err := binder.ParseWSPeerEndpoint(peer.wsEndpointURL, peer.wsMode, peer.wsTarget, peer.wsBearer)
+		if err != nil {
+			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set websocket endpoint: %w", err)
+		}
+		peer.endpoint.Lock()
+		peer.endpoint.val = endpoint
+		peer.endpoint.Unlock()
 	}
 	if peer.created {
 		peer.endpoint.disableRoaming = peer.device.net.brokenRoaming && peer.endpoint.val != nil
@@ -269,9 +305,17 @@ func (peer *ipcSetPeer) handlePostConfig() {
 		}
 		peer.SendStagedPackets()
 	}
+	return nil
 }
 
 func (device *Device) handlePublicKeyLine(peer *ipcSetPeer, value string) error {
+	// A new peer begins: clear the per-peer WebSocket keys so they never leak from
+	// the previous peer (ipcSetPeer is allocated once and reused for the whole op).
+	peer.wsEndpointURL = ""
+	peer.wsMode = ""
+	peer.wsTarget = ""
+	peer.wsBearer = ""
+
 	// Load/create the peer we are configuring.
 	var publicKey NoisePublicKey
 	err := publicKey.FromHex(value)
@@ -339,6 +383,11 @@ func (device *Device) handlePeerLine(peer *ipcSetPeer, key, value string) error 
 
 	case "endpoint":
 		device.log.Verbosef("%v - UAPI: Updating endpoint", peer.Peer)
+		if strings.HasPrefix(value, "ws://") || strings.HasPrefix(value, "wss://") {
+			// Defer: ws_mode/ws_target/ws_bearer may follow; built in handlePostConfig.
+			peer.wsEndpointURL = value
+			return nil
+		}
 		endpoint, err := device.net.bind.ParseEndpoint(value)
 		if err != nil {
 			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set endpoint %v: %w", value, err)
@@ -346,6 +395,17 @@ func (device *Device) handlePeerLine(peer *ipcSetPeer, key, value string) error 
 		peer.endpoint.Lock()
 		defer peer.endpoint.Unlock()
 		peer.endpoint.val = endpoint
+
+	case "ws_mode":
+		peer.wsMode = value
+
+	case "ws_target":
+		peer.wsTarget = value
+
+	case "ws_bearer":
+		// Write-only secret: log the key name only, never the value.
+		device.log.Verbosef("%v - UAPI: Updating websocket bearer", peer.Peer)
+		peer.wsBearer = value
 
 	case "persistent_keepalive_interval":
 		device.log.Verbosef("%v - UAPI: Updating persistent keepalive interval", peer.Peer)
