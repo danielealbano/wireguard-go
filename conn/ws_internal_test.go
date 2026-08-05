@@ -79,7 +79,7 @@ func TestWSUpgrade_Standard(t *testing.T) {
 }
 
 func TestWSUpgrade_Wstunnel(t *testing.T) {
-	e := &WSEndpoint{url: "wss://relay.example.com/myprefix", dialect: wsDialectWstunnel, target: "10.0.0.5:51820"}
+	e := &WSEndpoint{url: "wss://relay.example.com/myprefix", dialect: wsDialectWstunnel, wstunnelTarget: "10.0.0.5:51820"}
 	dialURL, _, subs, err := wsUpgradeRequest(e)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -126,7 +126,7 @@ func TestWSUpgrade_WstunnelDefaultPrefix(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e := &WSEndpoint{url: tc.url, dialect: wsDialectWstunnel, target: "10.0.0.5:51820"}
+			e := &WSEndpoint{url: tc.url, dialect: wsDialectWstunnel, wstunnelTarget: "10.0.0.5:51820"}
 			dialURL, _, _, err := wsUpgradeRequest(e)
 			if err != nil {
 				t.Fatalf("err: %v", err)

@@ -56,7 +56,7 @@ type wsListenReporter interface {
 }
 
 type wsEndpointConfig interface {
-	WSConfig() (mode, target, bearer string, ok bool)
+	WSConfig() (mode, wstunnelTarget, bearer string, ok bool)
 }
 
 // IpcGetOperation implements the WireGuard configuration protocol "get" operation.
@@ -127,10 +127,10 @@ func (device *Device) IpcGetOperation(w io.Writer) error {
 			if peer.endpoint.val != nil {
 				sendf("endpoint=%s", peer.endpoint.val.DstToString())
 				if wc, ok := peer.endpoint.val.(wsEndpointConfig); ok {
-					if mode, target, bearer, ok := wc.WSConfig(); ok {
+					if mode, wstunnelTarget, bearer, ok := wc.WSConfig(); ok {
 						sendf("ws_mode=%s", mode)
-						if target != "" {
-							sendf("ws_target=%s", target)
+						if wstunnelTarget != "" {
+							sendf("wstunnel_target=%s", wstunnelTarget)
 						}
 						if bearer != "" {
 							sendf("ws_bearer=%s", bearer)
@@ -301,10 +301,10 @@ type ipcSetPeer struct {
 	pkaOn   bool // pkaOn reports whether the peer had the persistent keepalive turn on
 	// WebSocket peer keys, collected across lines and consumed in handlePostConfig.
 	// Reset per peer in handlePublicKeyLine so peer N never inherits peer N-1's values.
-	wsEndpointURL string
-	wsMode        string
-	wsTarget      string
-	wsBearer      string
+	wsEndpointURL  string
+	wsMode         string
+	wstunnelTarget string
+	wsBearer       string
 }
 
 func (peer *ipcSetPeer) handlePostConfig() error {
@@ -316,7 +316,7 @@ func (peer *ipcSetPeer) handlePostConfig() error {
 		if !ok {
 			return ipcErrorf(ipc.IpcErrorInvalid, "websocket endpoint requires the websocket transport")
 		}
-		endpoint, err := binder.ParseWSPeerEndpoint(peer.wsEndpointURL, peer.wsMode, peer.wsTarget, peer.wsBearer)
+		endpoint, err := binder.ParseWSPeerEndpoint(peer.wsEndpointURL, peer.wsMode, peer.wstunnelTarget, peer.wsBearer)
 		if err != nil {
 			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set websocket endpoint: %w", err)
 		}
@@ -342,7 +342,7 @@ func (device *Device) handlePublicKeyLine(peer *ipcSetPeer, value string) error 
 	// the previous peer (ipcSetPeer is allocated once and reused for the whole op).
 	peer.wsEndpointURL = ""
 	peer.wsMode = ""
-	peer.wsTarget = ""
+	peer.wstunnelTarget = ""
 	peer.wsBearer = ""
 
 	// Load/create the peer we are configuring.
@@ -413,7 +413,7 @@ func (device *Device) handlePeerLine(peer *ipcSetPeer, key, value string) error 
 	case "endpoint":
 		device.log.Verbosef("%v - UAPI: Updating endpoint", peer.Peer)
 		if strings.HasPrefix(value, "ws://") || strings.HasPrefix(value, "wss://") {
-			// Defer: ws_mode/ws_target/ws_bearer may follow; built in handlePostConfig.
+			// Defer: ws_mode/wstunnel_target/ws_bearer may follow; built in handlePostConfig.
 			peer.wsEndpointURL = value
 			return nil
 		}
@@ -428,8 +428,8 @@ func (device *Device) handlePeerLine(peer *ipcSetPeer, key, value string) error 
 	case "ws_mode":
 		peer.wsMode = value
 
-	case "ws_target":
-		peer.wsTarget = value
+	case "wstunnel_target":
+		peer.wstunnelTarget = value
 
 	case "ws_bearer":
 		// Write-only secret: log the key name only, never the value.

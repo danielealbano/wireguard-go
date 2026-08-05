@@ -39,7 +39,7 @@ func wsUpgradeRequest(e *WSEndpoint) (dialURL string, header http.Header, subpro
 			prefix = wstunnelDefaultPathPrefix // no path given => wstunnel's default /v1/events
 		}
 		u.Path = "/" + prefix + "/events"
-		token, jerr := wstunnelJWT(e.target, wsRandomSecret())
+		token, jerr := wstunnelJWT(e.wstunnelTarget, wsRandomSecret())
 		if jerr != nil {
 			return "", nil, nil, jerr
 		}
