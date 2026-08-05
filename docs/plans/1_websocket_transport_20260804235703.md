@@ -3674,7 +3674,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -3863,9 +3862,6 @@ func waitFor(d time.Duration, cond func() bool) bool {
 	}
 	return false
 }
-
-func hexKey(b []byte) string { return fmt.Sprintf("%x", b) }
-func itoa(i int) string      { return strconv.Itoa(i) }
 ```
 
 - [x] **Action 13.3.3** — create `tests/e2e/keys_test.go` (`//go:build linux && e2e`): a `genKeypair`
