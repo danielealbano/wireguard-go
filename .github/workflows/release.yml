@@ -46,6 +46,8 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/danielealbano/wireguard-go:${{ github.ref_name }}
             ghcr.io/danielealbano/wireguard-go:latest

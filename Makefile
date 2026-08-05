@@ -9,8 +9,8 @@ MAKEFLAGS += --no-print-directory
 
 generate-version-and-build:
 	@export GIT_CEILING_DIRECTORIES="$(realpath $(CURDIR)/..)" && \
-	tag="$$(git describe --dirty 2>/dev/null)" && \
-	ver="$$(printf 'package main\n\nconst Version = "%s"\n' "$$tag")" && \
+	tag="$$(git describe --dirty 2>/dev/null)" && tag="$${tag#v}" && \
+	ver="$$(printf 'package main\n\nvar Version = "%s"\n' "$$tag")" && \
 	[ "$$(cat version.go 2>/dev/null)" != "$$ver" ] && \
 	echo "$$ver" > version.go && \
 	git update-index --assume-unchanged version.go || true

@@ -24,7 +24,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X main.Version={{ .Version }}
   - id: darwin
     main: .
     binary: wireguard-go
@@ -38,7 +38,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X main.Version={{ .Version }}
 
 archives:
   - id: default
