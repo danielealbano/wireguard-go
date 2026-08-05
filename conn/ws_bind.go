@@ -137,6 +137,10 @@ func (b *WebSocketBind) SetWSListen(rawURL string) error {
 	if _, err := url.Parse(rawURL); err != nil {
 		return fmt.Errorf("invalid ws_listen %q: %w", rawURL, err)
 	}
+	// Guarded by b.mu because openServer reads cfg.listenURL under b.mu (via Open),
+	// and BindUpdate can run Open concurrently with this UAPI write.
+	b.mu.Lock()
 	b.cfg.listenURL = rawURL
+	b.mu.Unlock()
 	return nil
 }

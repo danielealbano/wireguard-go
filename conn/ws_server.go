@@ -17,7 +17,10 @@ import (
 )
 
 func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound chan wsInbound, done <-chan struct{}) ([]ReceiveFunc, uint16, error) {
-	u, err := url.Parse(b.cfg.listenURL)
+	// openServer is called from Open under b.mu, so this read is synchronized with
+	// SetWSListen; capture a local so the serve goroutine below never touches the field.
+	listenURL := b.cfg.listenURL
+	u, err := url.Parse(listenURL)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -66,7 +69,7 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 			serveErr = b.srv.Serve(ln)
 		}
 		if serveErr != nil && serveErr != http.ErrServerClosed {
-			b.cfg.logger.errorf("websocket server on %s stopped: %v", b.cfg.listenURL, serveErr)
+			b.cfg.logger.errorf("websocket server on %s stopped: %v", listenURL, serveErr)
 		}
 	}()
 	return []ReceiveFunc{makeWSReceiveFunc(inbound, done)}, port, nil
