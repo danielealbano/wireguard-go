@@ -140,3 +140,11 @@ func (b *WebSocketBind) SetWSListen(rawURL string) error {
 	b.mu.Unlock()
 	return nil
 }
+
+// WSListenURL reports the configured server listen URL (empty when unset), so IpcGet
+// can round-trip ws_listen. Read under b.mu to synchronize with SetWSListen.
+func (b *WebSocketBind) WSListenURL() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cfg.listenURL
+}

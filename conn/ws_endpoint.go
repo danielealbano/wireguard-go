@@ -21,12 +21,26 @@ type WSEndpoint struct {
 	url     string         // client: canonical ws(s):// URL, echoed by IpcGet
 	dialect wsDialect      // client only
 	target  string         // client, wstunnel mode: real WireGuard "host:port" (JWT r/rp)
-	bearer  string         // client: optional bearer; NEVER echoed or logged
+	bearer  string         // client: optional bearer; echoed by IpcGet for round-tripping (like preshared_key), never logged
 	dst     netip.AddrPort // server: client remote (or XFF) addr; client: advisory (zero)
 	connID  uint64         // server: identifies the live connection for Send dispatch
 }
 
 var _ Endpoint = (*WSEndpoint)(nil)
+
+// WSConfig reports this endpoint's additive UAPI settings (ws_mode/ws_target/ws_bearer)
+// so IpcGet can round-trip them. ok is false for server inbound endpoints (they carry no
+// configured URL), so IpcGet emits the ws_* keys only for client, URL-configured peers.
+func (e *WSEndpoint) WSConfig() (mode, target, bearer string, ok bool) {
+	if e.url == "" {
+		return "", "", "", false
+	}
+	mode = "standard"
+	if e.dialect == wsDialectWstunnel {
+		mode = "wstunnel"
+	}
+	return mode, e.target, e.bearer, true
+}
 
 func (e *WSEndpoint) ClearSrc()           {}
 func (e *WSEndpoint) SrcToString() string { return "" }

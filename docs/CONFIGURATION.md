@@ -61,7 +61,11 @@ tears the listener down.
 | `endpoint=<ws(s)://host:port[/path]>` | The peer's WebSocket URL (replaces the UDP `host:port` endpoint). |
 | `ws_mode=standard\|wstunnel` | `standard` = this fork's native dialect (talks to a wireguard-go WS **server**). `wstunnel` = interop with a [wstunnel](https://github.com/erebe/wstunnel) server. Default `standard`. |
 | `ws_target=<host:port>` | **wstunnel mode only** — the real WireGuard UDP endpoint the wstunnel server must forward to (the JWT `r`/`rp`). Required when `ws_mode=wstunnel`. |
-| `ws_bearer=<token>` | Optional per-peer bearer: `standard` ⇒ `Authorization: Bearer <token>`; `wstunnel` ⇒ HTTP basic-auth (base64 `user:pass`). Never logged or echoed. |
+| `ws_bearer=<token>` | Optional per-peer bearer: `standard` ⇒ `Authorization: Bearer <token>`; `wstunnel` ⇒ HTTP basic-auth (base64 `user:pass`). Never logged; echoed by `get=1` (like `preshared_key`) so bearer-authed peers survive a reload. |
+
+**Round-trip:** `get=1` emits `ws_listen` (device) and per-peer `ws_mode`/`ws_target`/`ws_bearer`, so
+`wg showconf` / `wg-quick SaveConfig` / `syncconf` preserve them across a save/reload. `ws_bearer` is
+echoed over the trusted local UAPI socket (like `preshared_key`); it is never logged.
 
 ## 4. Examples
 

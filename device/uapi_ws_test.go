@@ -11,6 +11,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -100,12 +102,16 @@ func TestUAPI_WSListen_RequiresWSBind(t *testing.T) {
 	}
 }
 
-func TestUAPI_Bearer_NotEchoed(t *testing.T) {
-	dev := newWSTestDevice(t, &mockWSBind{}, nil)
+func TestUAPI_Bearer_EchoedForRoundTrip(t *testing.T) {
+	// ws_bearer is echoed by IpcGet (like private_key/preshared_key, over the same trusted
+	// socket) so a bearer-authed peer survives a get -> set reload. It must still never be
+	// logged (see TestUAPI_Bearer_NotLogged).
+	dev := newRealWSClientDevice(t)
+	const bearer = "super-secret-token"
 	cfg := "private_key=" + randKeyHex(t) + "\n" +
 		"public_key=" + randKeyHex(t) + "\n" +
 		"endpoint=wss://server.example.com/wg\n" +
-		"ws_bearer=super-secret-token\n"
+		"ws_bearer=" + bearer + "\n"
 	if err := dev.IpcSet(cfg); err != nil {
 		t.Fatalf("IpcSet: %v", err)
 	}
@@ -113,8 +119,8 @@ func TestUAPI_Bearer_NotEchoed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IpcGet: %v", err)
 	}
-	if strings.Contains(got, "ws_bearer") || strings.Contains(got, "super-secret-token") {
-		t.Errorf("IpcGet leaked the bearer:\n%s", got)
+	if !strings.Contains(got, "ws_bearer="+bearer) {
+		t.Errorf("IpcGet did not round-trip the bearer:\n%s", got)
 	}
 }
 
@@ -165,5 +171,159 @@ func TestUAPI_WSKeys_NotLeakedAcrossPeers(t *testing.T) {
 	p2 := bind.calls[1]
 	if p2.mode != "" || p2.target != "" || p2.bearer != "" {
 		t.Errorf("peer 2 inherited WS keys from peer 1: %+v", p2)
+	}
+}
+
+// newRealWSClientDevice builds a device on a real client-role WebSocket bind, so peer
+// endpoints are genuine conn.WSEndpoints (which IpcGet round-trips) rather than mocks.
+func newRealWSClientDevice(t *testing.T) *Device {
+	t.Helper()
+	b, err := conn.NewWebSocketBind(conn.WithWSRole(conn.WSRoleClient))
+	if err != nil {
+		t.Fatalf("client bind: %v", err)
+	}
+	return newWSTestDevice(t, b, nil)
+}
+
+func TestUAPI_Get_EmitsWSPeerKeys(t *testing.T) {
+	tests := []struct {
+		name       string
+		peerCfg    string
+		wantLines  []string
+		absentKeys []string
+	}{
+		{
+			name:       "standard mode omits target and bearer",
+			peerCfg:    "endpoint=wss://server.example.com/wg\n",
+			wantLines:  []string{"endpoint=wss://server.example.com/wg", "ws_mode=standard"},
+			absentKeys: []string{"ws_target=", "ws_bearer="},
+		},
+		{
+			name: "wstunnel mode with target and bearer",
+			peerCfg: "endpoint=wss://relay.example.com:8443\n" +
+				"ws_mode=wstunnel\nws_target=10.0.0.9:51820\nws_bearer=tok\n",
+			wantLines: []string{
+				"endpoint=wss://relay.example.com:8443",
+				"ws_mode=wstunnel",
+				"ws_target=10.0.0.9:51820",
+				"ws_bearer=tok",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dev := newRealWSClientDevice(t)
+			cfg := "private_key=" + randKeyHex(t) + "\npublic_key=" + randKeyHex(t) + "\n" + tc.peerCfg
+			if err := dev.IpcSet(cfg); err != nil {
+				t.Fatalf("IpcSet: %v", err)
+			}
+			got, err := dev.IpcGet()
+			if err != nil {
+				t.Fatalf("IpcGet: %v", err)
+			}
+			for _, line := range tc.wantLines {
+				if !strings.Contains(got, line) {
+					t.Errorf("IpcGet missing %q:\n%s", line, got)
+				}
+			}
+			for _, k := range tc.absentKeys {
+				if strings.Contains(got, k) {
+					t.Errorf("IpcGet unexpectedly contains %q:\n%s", k, got)
+				}
+			}
+		})
+	}
+}
+
+func TestUAPI_Get_EmitsWSListen(t *testing.T) {
+	const listenURL = "wss://0.0.0.0:443/wg"
+	b, err := conn.NewWebSocketBind(conn.WithWSRole(conn.WSRoleServer), conn.WithWSListenURL(listenURL))
+	if err != nil {
+		t.Fatalf("server bind: %v", err)
+	}
+	dev := newWSTestDevice(t, b, nil)
+	if err := dev.IpcSet("private_key=" + randKeyHex(t) + "\n"); err != nil {
+		t.Fatalf("IpcSet: %v", err)
+	}
+	got, err := dev.IpcGet()
+	if err != nil {
+		t.Fatalf("IpcGet: %v", err)
+	}
+	if !strings.Contains(got, "ws_listen="+listenURL) {
+		t.Errorf("IpcGet missing ws_listen:\n%s", got)
+	}
+}
+
+func TestUAPI_Get_UDPTransportHasNoWSKeys(t *testing.T) {
+	dev := newWSTestDevice(t, conn.NewDefaultBind(), nil)
+	cfg := "private_key=" + randKeyHex(t) + "\nlisten_port=0\n" +
+		"public_key=" + randKeyHex(t) + "\nendpoint=127.0.0.1:51820\nallowed_ip=1.0.0.0/24\n"
+	if err := dev.IpcSet(cfg); err != nil {
+		t.Fatalf("IpcSet: %v", err)
+	}
+	got, err := dev.IpcGet()
+	if err != nil {
+		t.Fatalf("IpcGet: %v", err)
+	}
+	if strings.Contains(got, "ws_") {
+		t.Errorf("UDP transport IpcGet contains ws_ keys:\n%s", got)
+	}
+}
+
+// TestUAPI_Get_WSKeys_RoundTrip proves the additive WS keys survive a get -> set -> get
+// cycle: feeding IpcGet's output back into a fresh device (keeping only set-valid keys)
+// reconstructs the same endpoint and ws_* lines.
+func TestUAPI_Get_WSKeys_RoundTrip(t *testing.T) {
+	dev1 := newRealWSClientDevice(t)
+	cfg := "private_key=" + randKeyHex(t) + "\npublic_key=" + randKeyHex(t) + "\n" +
+		"endpoint=wss://relay.example.com:8443\n" +
+		"ws_mode=wstunnel\nws_target=10.0.0.9:51820\nws_bearer=tok\n" +
+		"allowed_ip=1.0.0.0/24\n"
+	if err := dev1.IpcSet(cfg); err != nil {
+		t.Fatalf("dev1 IpcSet: %v", err)
+	}
+	g1, err := dev1.IpcGet()
+	if err != nil {
+		t.Fatalf("dev1 IpcGet: %v", err)
+	}
+
+	// Keep only keys the set operation accepts (drops get-only fields like tx_bytes).
+	allow := map[string]bool{
+		"private_key": true, "public_key": true, "endpoint": true,
+		"ws_mode": true, "ws_target": true, "ws_bearer": true,
+		"allowed_ip": true, "persistent_keepalive_interval": true,
+	}
+	var sb strings.Builder
+	for _, line := range strings.Split(g1, "\n") {
+		if k, _, ok := strings.Cut(line, "="); ok && allow[k] {
+			sb.WriteString(line)
+			sb.WriteByte('\n')
+		}
+	}
+	dev2 := newRealWSClientDevice(t)
+	if err := dev2.IpcSet(sb.String()); err != nil {
+		t.Fatalf("dev2 IpcSet (from get output): %v\ninput:\n%s", err, sb.String())
+	}
+	g2, err := dev2.IpcGet()
+	if err != nil {
+		t.Fatalf("dev2 IpcGet: %v", err)
+	}
+
+	wsLines := func(s string) []string {
+		var out []string
+		for _, l := range strings.Split(s, "\n") {
+			if strings.HasPrefix(l, "ws_") || strings.HasPrefix(l, "endpoint=") {
+				out = append(out, l)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	got1, got2 := wsLines(g1), wsLines(g2)
+	if len(got1) == 0 {
+		t.Fatalf("dev1 emitted no WS keys to round-trip:\n%s", g1)
+	}
+	if !reflect.DeepEqual(got1, got2) {
+		t.Errorf("WS keys not preserved across get -> set -> get:\ndev1: %v\ndev2: %v", got1, got2)
 	}
 }

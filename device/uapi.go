@@ -47,6 +47,18 @@ var byteBufferPool = &sync.Pool{
 	New: func() any { return new(bytes.Buffer) },
 }
 
+// wsListenReporter and wsEndpointConfig let IpcGetOperation round-trip the WebSocket
+// transport's additive keys without pulling transport specifics into the device core:
+// only the WebSocket bind and its client endpoints implement them, so get=1 output for
+// the UDP transport is byte-for-byte unchanged.
+type wsListenReporter interface {
+	WSListenURL() string
+}
+
+type wsEndpointConfig interface {
+	WSConfig() (mode, target, bearer string, ok bool)
+}
+
 // IpcGetOperation implements the WireGuard configuration protocol "get" operation.
 // See https://www.wireguard.com/xplatform/#configuration-protocol for details.
 func (device *Device) IpcGetOperation(w io.Writer) error {
@@ -98,6 +110,12 @@ func (device *Device) IpcGetOperation(w io.Writer) error {
 			sendf("fwmark=%d", device.net.fwmark)
 		}
 
+		if r, ok := device.net.bind.(wsListenReporter); ok {
+			if url := r.WSListenURL(); url != "" {
+				sendf("ws_listen=%s", url)
+			}
+		}
+
 		for _, peer := range device.peers.keyMap {
 			// Serialize peer state.
 			peer.handshake.mutex.RLock()
@@ -108,6 +126,17 @@ func (device *Device) IpcGetOperation(w io.Writer) error {
 			peer.endpoint.Lock()
 			if peer.endpoint.val != nil {
 				sendf("endpoint=%s", peer.endpoint.val.DstToString())
+				if wc, ok := peer.endpoint.val.(wsEndpointConfig); ok {
+					if mode, target, bearer, ok := wc.WSConfig(); ok {
+						sendf("ws_mode=%s", mode)
+						if target != "" {
+							sendf("ws_target=%s", target)
+						}
+						if bearer != "" {
+							sendf("ws_bearer=%s", bearer)
+						}
+					}
+				}
 			}
 			peer.endpoint.Unlock()
 
