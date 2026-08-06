@@ -8,6 +8,7 @@ package conn
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -127,7 +128,30 @@ func (b *WebSocketBind) ParseWSPeerEndpoint(rawURL, mode, wstunnelTarget, bearer
 	return e, nil
 }
 
-func (b *WebSocketBind) SetMark(mark uint32) error { b.mark.Store(mark); return nil }
+// SetMark stores the mark for future dials/accepts AND re-applies it to every
+// currently-open socket in place, matching UDP's StdNetBind.SetMark (mark_unix.go).
+// This is the socket-side half of the wg-quick fwmark contract: the WS TCP socket
+// must carry the mark on every segment or the `ip rule not fwmark` rule blackholes
+// it under full-tunnel. Best-effort: the store never fails; a live socket that
+// cannot be re-marked is logged and gets marked on its next reconnect.
+func (b *WebSocketBind) SetMark(mark uint32) error {
+	b.mark.Store(mark)
+	b.mu.Lock()
+	conns := make([]net.Conn, 0, len(b.conns)+len(b.sconns))
+	for _, c := range b.conns {
+		conns = append(conns, c.wc.conn)
+	}
+	for _, sc := range b.sconns {
+		conns = append(conns, sc.wc.conn)
+	}
+	b.mu.Unlock()
+	for _, c := range conns {
+		if err := markConn(c, mark); err != nil {
+			b.cfg.logger.errorf("websocket: re-mark live socket: %v", err)
+		}
+	}
+	return nil
+}
 
 func (b *WebSocketBind) SetWSListen(rawURL string) error {
 	if _, err := url.Parse(rawURL); err != nil {

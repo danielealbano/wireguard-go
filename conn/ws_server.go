@@ -44,6 +44,12 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 		if err != nil {
 			return
 		}
+		// Mark the accepted socket so a server under a full-tunnel fwmark rule keeps
+		// its replies off the tun (server-side parity with client dial marking;
+		// no-op on darwin/windows).
+		if err := markConn(netConn, b.mark.Load()); err != nil {
+			b.cfg.logger.errorf("websocket: mark accepted socket: %v", err)
+		}
 		dst := resolveClientAddr(r, b.cfg.trustedProxies)
 		b.mu.Lock()
 		if b.closed {
