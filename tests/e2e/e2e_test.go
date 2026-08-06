@@ -158,6 +158,50 @@ func TestE2E_MixedPeers(t *testing.T) {
 func TestE2E_Wstunnel(t *testing.T)       { runWstunnelE2E(t, false) }
 func TestE2E_WstunnelMasked(t *testing.T) { runWstunnelE2E(t, true) }
 
+// TestE2E_Wstunnel_FullTunnel is the wstunnel-transport counterpart of
+// TestE2E_WebSocket_FullTunnel: under wg-quick's fwmark + `ip rule not fwmark`, the TCP
+// socket to the wstunnel relay must carry the mark or it self-loops into the tun.
+func TestE2E_Wstunnel_FullTunnel(t *testing.T) {
+	l := newLab(t)
+	br := l.addBridge()
+	nsC := l.addNS() // client, 10.9.0.1
+	nsW := l.addNS() // wstunnel, 10.9.0.3
+	nsS := l.addNS() // udp wg server, 10.9.0.2
+	l.vethToBridge(nsC, br, "10.9.0.1/24")
+	l.vethToBridge(nsW, br, "10.9.0.3/24")
+	l.vethToBridge(nsS, br, "10.9.0.2/24")
+
+	privC, pubC := genKeypair(t)
+	privS, pubS := genKeypair(t)
+
+	// Plain-UDP wg server (the real endpoint wstunnel forwards to).
+	wgS := l.startDaemon(nsS, nil)
+	l.uapiSet(wgS, fmt.Sprintf("private_key=%s\nlisten_port=51820\npublic_key=%s\ntransport=udp\nallowed_ip=10.10.0.1/32\n", privS, pubC))
+	l.ifup(nsS, wgS, "10.10.0.2/24")
+
+	l.startWstunnel(nsW, "ws://10.9.0.3:8080", "10.9.0.2:51820")
+
+	// wg WebSocket client in wstunnel mode, full-tunnel (catches everything).
+	wgC := l.startDaemon(nsC, nil)
+	l.uapiSet(wgC, fmt.Sprintf(
+		"private_key=%s\npublic_key=%s\ntransport=wstunnel\nendpoint=10.9.0.3:8080\nws_url=ws://10.9.0.3:8080/v1\nwstunnel_target=10.9.0.2:51820\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=1\n",
+		privC, pubS))
+	l.ifup(nsC, wgC, "10.10.0.1/24")
+
+	if !l.ping(nsC, "10.10.0.2") {
+		t.Fatal("baseline ping (before full-tunnel routing) failed")
+	}
+
+	// Install wg-quick's full-tunnel routing, then re-mark the live socket.
+	l.uapiSet(wgC, "fwmark=51820\n")
+	l.run("ip", "-n", nsC, "rule", "add", "not", "fwmark", "51820", "table", "51820")
+	l.run("ip", "-n", nsC, "route", "add", "default", "dev", wgC, "table", "51820")
+
+	if !l.ping(nsC, "10.10.0.2") {
+		t.Fatal("ping through the wstunnel FULL-TUNNEL failed (relay socket not re-marked?)")
+	}
+}
+
 func runWstunnelE2E(t *testing.T, masked bool) {
 	l := newLab(t)
 	br := l.addBridge()
