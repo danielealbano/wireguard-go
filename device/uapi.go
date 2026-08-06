@@ -134,8 +134,14 @@ func (device *Device) IpcGetOperation(w io.Writer) error {
 			if bearer := r.WSServerBearer(); bearer != "" {
 				sendf("ws_server_bearer=%s", bearer) // value emitted (like a key), never logged
 			}
-			for _, p := range r.WSTrustedProxies() {
-				sendf("ws_trusted_proxies=%s", p.String())
+			if tp := r.WSTrustedProxies(); len(tp) > 0 {
+				parts := make([]string, len(tp))
+				for i, p := range tp {
+					parts[i] = p.String()
+				}
+				// One comma-separated line, symmetric with set (parseCIDRList) so a
+				// get→set round-trip preserves every proxy, not just the last.
+				sendf("ws_trusted_proxies=%s", strings.Join(parts, ","))
 			}
 		}
 

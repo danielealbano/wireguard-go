@@ -378,3 +378,30 @@ func TestUAPI_ServerKeys_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestUAPI_TrustedProxies_MultiRoundTrip locks in that MULTIPLE trusted proxies survive a
+// get→set→get cycle. get emits one comma-separated line, symmetric with set (parseCIDRList);
+// a per-prefix get would make each set line replace the slice, keeping only the last proxy.
+func TestUAPI_TrustedProxies_MultiRoundTrip(t *testing.T) {
+	bind := &mockWSBind{}
+	dev := newWSTestDevice(t, bind, nil)
+	if err := dev.IpcSet("private_key=" + randKeyHex(t) + "\n" +
+		"ws_listen=ws://0.0.0.0:8443/wg\nws_trusted_proxies=10.0.0.0/8,192.168.0.0/16,172.16.0.0/12\n"); err != nil {
+		t.Fatalf("IpcSet: %v", err)
+	}
+	got, err := dev.IpcGet()
+	if err != nil {
+		t.Fatalf("IpcGet: %v", err)
+	}
+	if !strings.Contains(got, "ws_trusted_proxies=10.0.0.0/8,192.168.0.0/16,172.16.0.0/12") {
+		t.Fatalf("IpcGet did not emit all proxies on one line:\n%s", got)
+	}
+
+	// Re-apply the dumped config (get→set→get); every proxy must persist.
+	if err := dev.IpcSet(got); err != nil {
+		t.Fatalf("re-apply IpcSet: %v", err)
+	}
+	if tp := bind.WSTrustedProxies(); len(tp) != 3 {
+		t.Fatalf("after get→set round-trip, trusted proxies = %v, want 3", tp)
+	}
+}
