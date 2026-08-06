@@ -196,7 +196,7 @@ func newWSSilentServer(t *testing.T) string {
 
 // newWSMaskProbe upgrades one client and reports the mask bit of the first binary
 // frame it receives, so a test can assert the client bind's masking behaviour
-// (unmasked by default; masked with WithWSMask(true)).
+// (unmasked by default; masked when the per-peer ws_mask key is set).
 func newWSMaskProbe(t *testing.T) (url string, masked <-chan bool) {
 	t.Helper()
 	ch := make(chan bool, 1)

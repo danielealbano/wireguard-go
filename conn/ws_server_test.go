@@ -438,6 +438,40 @@ func TestWSServer_OpenCloseStress(t *testing.T) {
 	}
 }
 
+// TestWSServer_AcceptMarksSocketBestEffort drives the accept-time socket marking
+// (ws_server.go): with a non-zero mark set, the accept handler calls markConn on the
+// upgraded socket. Under privilege the SO_MARK succeeds; unprivileged it fails and is
+// logged — but either way the accepted connection MUST still be established and usable,
+// mirroring UDP's best-effort marking.
+func TestWSServer_AcceptMarksSocketBestEffort(t *testing.T) {
+	addr := freeLocalAddr(t)
+	url := "ws://" + addr + "/wg"
+	b, err := conn.NewWebSocketBind(conn.WithWSLogger(conn.Logger{}))
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if err := b.SetWSListen(url); err != nil {
+		t.Fatalf("SetWSListen: %v", err)
+	}
+	if err := b.SetMark(0x5151); err != nil {
+		t.Fatalf("SetMark: %v", err)
+	}
+	fns, _, err := b.Open(0)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	time.Sleep(50 * time.Millisecond)
+
+	c := rawDial(t, url, "", false)
+	if err := c.writeBinary([]byte{7}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if ep := recvEndpoint(t, fns[0]); ep == nil {
+		t.Fatal("accept path dropped the marked socket (no endpoint received)")
+	}
+}
+
 func TestWSServer_OpenWithoutListenURL(t *testing.T) {
 	// A bind opened before ws_listen is configured must bring up a receiver with no
 	// HTTP server (a device can go Up first) and never panic in ServeMux.
