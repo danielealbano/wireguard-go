@@ -55,15 +55,28 @@ func (m *mockWSBind) ParseWSPeerEndpoint(cfg conn.WSPeerConfig) (conn.Endpoint, 
 	return mockUDPEndpoint(cfg.Endpoint.String()), nil
 }
 
-func (m *mockWSBind) SetWSListen(u string) error         { m.mu.Lock(); m.listen = u; m.mu.Unlock(); return nil }
-func (m *mockWSBind) SetServerCertPath(p string)         { m.mu.Lock(); m.serverCert = p; m.mu.Unlock() }
-func (m *mockWSBind) SetServerKeyPath(p string)          { m.mu.Lock(); m.serverKey = p; m.mu.Unlock() }
-func (m *mockWSBind) SetServerBearer(b string)           { m.mu.Lock(); m.serverBearer = b; m.mu.Unlock() }
-func (m *mockWSBind) SetTrustedProxies(p []netip.Prefix) { m.mu.Lock(); m.trustedProxies = p; m.mu.Unlock() }
+func (m *mockWSBind) SetWSListen(u string) error {
+	m.mu.Lock()
+	m.listen = u
+	m.mu.Unlock()
+	return nil
+}
+func (m *mockWSBind) SetServerCertPath(p string) { m.mu.Lock(); m.serverCert = p; m.mu.Unlock() }
+func (m *mockWSBind) SetServerKeyPath(p string)  { m.mu.Lock(); m.serverKey = p; m.mu.Unlock() }
+func (m *mockWSBind) SetServerBearer(b string)   { m.mu.Lock(); m.serverBearer = b; m.mu.Unlock() }
+func (m *mockWSBind) SetTrustedProxies(p []netip.Prefix) {
+	m.mu.Lock()
+	m.trustedProxies = p
+	m.mu.Unlock()
+}
 
-func (m *mockWSBind) WSListenURL() string                { m.mu.Lock(); defer m.mu.Unlock(); return m.listen }
-func (m *mockWSBind) WSServerBearer() string             { m.mu.Lock(); defer m.mu.Unlock(); return m.serverBearer }
-func (m *mockWSBind) WSTrustedProxies() []netip.Prefix   { m.mu.Lock(); defer m.mu.Unlock(); return m.trustedProxies }
+func (m *mockWSBind) WSListenURL() string    { m.mu.Lock(); defer m.mu.Unlock(); return m.listen }
+func (m *mockWSBind) WSServerBearer() string { m.mu.Lock(); defer m.mu.Unlock(); return m.serverBearer }
+func (m *mockWSBind) WSTrustedProxies() []netip.Prefix {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.trustedProxies
+}
 func (m *mockWSBind) WSServerTLSPaths() (string, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -191,7 +204,8 @@ func TestUAPI_Set_Validation(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			dev := newWSTestDevice(t, &mockWSBind{}, nil)
+			// The real multiplex bind so ParseWSPeerEndpoint's checks run too (the mock skips them).
+			dev := newRealMultiplexDevice(t)
 			cfg := "private_key=" + randKeyHex(t) + "\npublic_key=" + randKeyHex(t) + "\n" + tc.peer
 			if err := dev.IpcSet(cfg); err == nil {
 				t.Errorf("expected rejection, got nil")
@@ -232,8 +246,9 @@ func TestUAPI_WSListen_RequiresWSBind(t *testing.T) {
 func TestUAPI_Get_RoundTrip_AllTransports(t *testing.T) {
 	dev1 := newRealMultiplexDevice(t)
 	udpPub, wsPub, wstPub, inPub := randKeyHex(t), randKeyHex(t), randKeyHex(t), randKeyHex(t)
-	cfg := "private_key=" + randKeyHex(t) + "\nlisten_port=0\n" +
-		"ws_listen=wss://0.0.0.0:8443/wg\nws_server_bearer=srv-secret\nws_trusted_proxies=10.0.0.0/8\n" +
+	// Peer round-trip only; device-level server keys are covered by TestUAPI_ServerKeys_RoundTrip
+	// (a fixed ws_listen port would collide between dev1 and dev2).
+	cfg := "private_key=" + randKeyHex(t) + "\n" +
 		"public_key=" + udpPub + "\ntransport=udp\nendpoint=198.51.100.1:51820\nallowed_ip=1.0.0.1/32\n" +
 		"public_key=" + wsPub + "\ntransport=websocket\nendpoint=203.0.113.5:8443\nws_url=wss://relay.example.com:8443/wg\nws_mask=true\nallowed_ip=1.0.0.2/32\n" +
 		"public_key=" + wstPub + "\ntransport=wstunnel\nendpoint=203.0.113.6:8443\nws_url=wss://relay.example.com:8443\nwstunnel_target=10.0.0.9:51820\nws_bearer=tok\nallowed_ip=1.0.0.3/32\n" +
@@ -252,7 +267,7 @@ func TestUAPI_Get_RoundTrip_AllTransports(t *testing.T) {
 
 	// Feed the get output back (keeping only set-valid keys) into a fresh device.
 	allow := map[string]bool{
-		"private_key": true, "listen_port": true, "public_key": true, "transport": true,
+		"private_key": true, "public_key": true, "transport": true,
 		"endpoint": true, "ws_url": true, "wstunnel_target": true, "ws_bearer": true,
 		"ws_mask": true, "ws_tls_ca": true, "ws_tls_cert": true, "ws_tls_key": true,
 		"ws_tls_insecure": true, "ws_ping_interval": true, "ws_backoff_min": true,

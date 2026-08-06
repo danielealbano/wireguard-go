@@ -113,9 +113,9 @@ func TestE2E_WebSocket_FullTunnel(t *testing.T) {
 func TestE2E_MixedPeers(t *testing.T) {
 	l := newLab(t)
 	br := l.addBridge()
-	nsC := l.addNS()  // client with a UDP peer AND a WS peer
-	nsU := l.addNS()  // UDP server
-	nsW := l.addNS()  // WS server
+	nsC := l.addNS() // client with a UDP peer AND a WS peer
+	nsU := l.addNS() // UDP server
+	nsW := l.addNS() // WS server
 	l.vethToBridge(nsC, br, "10.9.0.1/24")
 	l.vethToBridge(nsU, br, "10.9.0.2/24")
 	l.vethToBridge(nsW, br, "10.9.0.4/24")

@@ -17,8 +17,8 @@ import (
 // real socket option is set.
 type fakeRawConn struct{}
 
-func (fakeRawConn) Control(f func(uintptr)) error { f(3); return nil }
-func (fakeRawConn) Read(func(uintptr) bool) error { return nil }
+func (fakeRawConn) Control(f func(uintptr)) error  { f(3); return nil }
+func (fakeRawConn) Read(func(uintptr) bool) error  { return nil }
 func (fakeRawConn) Write(func(uintptr) bool) error { return nil }
 
 func TestWSPinning_ProtectInvoked(t *testing.T) {

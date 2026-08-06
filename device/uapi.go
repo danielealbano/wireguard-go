@@ -328,6 +328,11 @@ func (device *Device) handleDeviceLine(key, value string) error {
 		}
 		device.log.Verbosef("UAPI: Updating websocket server bearer") // key name only, never the value
 		binder.SetServerBearer(value)
+		// BindUpdate so a running listener (opened by an earlier ws_listen line in the
+		// same setconf) reopens with the complete server config, regardless of key order.
+		if err := device.BindUpdate(); err != nil {
+			return ipcErrorf(ipc.IpcErrorPortInUse, "failed to set ws_server_bearer: %w", err)
+		}
 
 	case "ws_trusted_proxies":
 		binder, err := device.wsBinder()
@@ -339,6 +344,9 @@ func (device *Device) handleDeviceLine(key, value string) error {
 			return ipcErrorf(ipc.IpcErrorInvalid, "invalid ws_trusted_proxies: %w", err)
 		}
 		binder.SetTrustedProxies(prefixes)
+		if err := device.BindUpdate(); err != nil {
+			return ipcErrorf(ipc.IpcErrorPortInUse, "failed to set ws_trusted_proxies: %w", err)
+		}
 
 	case "replace_peers":
 		if value != "true" {

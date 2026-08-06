@@ -147,7 +147,7 @@ func newUDPServerDevice(t *testing.T, selfPriv, peerPub string) (*tuntest.Channe
 	t.Helper()
 	tdev := tuntest.NewChannelTUN()
 	d := device.NewDevice(tdev.TUN(), conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, ""))
-	cfg := fmt.Sprintf("private_key=%s\nlisten_port=0\npublic_key=%s\nallowed_ip=1.0.0.1/32\n", selfPriv, peerPub)
+	cfg := fmt.Sprintf("private_key=%s\nlisten_port=0\npublic_key=%s\ntransport=udp\nallowed_ip=1.0.0.1/32\n", selfPriv, peerPub)
 	if err := d.IpcSet(cfg); err != nil {
 		t.Fatalf("server IpcSet: %v", err)
 	}
