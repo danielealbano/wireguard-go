@@ -12,7 +12,6 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/ipc"
 
@@ -49,15 +48,9 @@ func main() {
 		os.Exit(ExitSetupFailed)
 	}
 
-	transport := os.Getenv("WG_TRANSPORT")
-	wsOpts, err := buildWSOptionsFromEnv(logger)
+	bind, err := newDaemonBind(logger)
 	if err != nil {
-		logger.Errorf("Invalid websocket configuration: %v", err)
-		os.Exit(ExitSetupFailed)
-	}
-	bind, err := conn.NewBindForTransport(transport, wsOpts...)
-	if err != nil {
-		logger.Errorf("Invalid WG_TRANSPORT: %v", err)
+		logger.Errorf("Failed to create transport bind: %v", err)
 		os.Exit(ExitSetupFailed)
 	}
 

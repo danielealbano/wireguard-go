@@ -7,13 +7,7 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"fmt"
-	"net/netip"
 	"os"
-	"strings"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -22,71 +16,14 @@ import (
 	"golang.zx2c4.com/wireguard/metrics"
 )
 
-// buildWSOptionsFromEnv assembles the process-level WebSocket configuration from
-// the WG_WS_* environment. Secrets (WG_WS_BEARER, TLS material) are never logged.
-func buildWSOptionsFromEnv(logger *device.Logger) ([]conn.WSOption, error) {
-	opts := []conn.WSOption{
+// newDaemonBind builds the daemon's transport bind: a multiplexing bind that
+// carries UDP and WebSocket/wstunnel peers at once. All tunnel config (per-peer
+// transport, endpoints, TLS, server/listener settings) now arrives via the UAPI,
+// so only the logger (and, on embedded builds, a protect callback) is wired here.
+func newDaemonBind(logger *device.Logger) (conn.Bind, error) {
+	return conn.NewMultiplexBind(
 		conn.WithWSLogger(conn.Logger{Verbosef: logger.Verbosef, Errorf: logger.Errorf}),
-	}
-
-	role := conn.WSRoleClient
-	if os.Getenv("WG_WS_ROLE") == "server" {
-		role = conn.WSRoleServer
-	}
-	opts = append(opts, conn.WithWSRole(role))
-
-	if m := os.Getenv("WG_WS_MASK"); m == "1" || m == "true" {
-		opts = append(opts, conn.WithWSMask(true)) // peer wstunnel server must run --websocket-mask-frame
-	}
-
-	if cert, key := os.Getenv("WG_WS_TLS_CERT"), os.Getenv("WG_WS_TLS_KEY"); cert != "" && key != "" {
-		crt, err := tls.LoadX509KeyPair(cert, key)
-		if err != nil {
-			return nil, fmt.Errorf("load server TLS keypair: %w", err)
-		}
-		opts = append(opts, conn.WithWSServerTLS(&tls.Config{Certificates: []tls.Certificate{crt}}))
-	}
-
-	ca, sni := os.Getenv("WG_WS_TLS_CA"), os.Getenv("WG_WS_TLS_SERVERNAME")
-	insecure := os.Getenv("WG_WS_TLS_INSECURE") == "1"
-	if ca != "" || sni != "" || insecure {
-		tc := &tls.Config{ServerName: sni, InsecureSkipVerify: insecure}
-		if ca != "" {
-			pem, err := os.ReadFile(ca)
-			if err != nil {
-				return nil, fmt.Errorf("read client CA: %w", err)
-			}
-			pool := x509.NewCertPool()
-			if !pool.AppendCertsFromPEM(pem) {
-				return nil, fmt.Errorf("client CA %q: no certificates parsed", ca)
-			}
-			tc.RootCAs = pool
-		}
-		opts = append(opts, conn.WithWSClientTLS(tc))
-	}
-
-	if tok := os.Getenv("WG_WS_BEARER"); tok != "" {
-		opts = append(opts, conn.WithWSServerBearer(tok))
-	}
-	if d := os.Getenv("WG_WS_PING_INTERVAL"); d != "" {
-		iv, err := time.ParseDuration(d)
-		if err != nil {
-			return nil, fmt.Errorf("WG_WS_PING_INTERVAL: %w", err)
-		}
-		opts = append(opts, conn.WithWSPingInterval(iv))
-	}
-	if cidrs := os.Getenv("WG_WS_TRUSTED_PROXIES"); cidrs != "" {
-		var prefixes []netip.Prefix
-		for _, c := range strings.Split(cidrs, ",") {
-			p, err := netip.ParsePrefix(strings.TrimSpace(c))
-			if err != nil {
-				return nil, fmt.Errorf("WG_WS_TRUSTED_PROXIES %q: %w", c, err)
-			}
-			prefixes = append(prefixes, p)
-		}
-		opts = append(opts, conn.WithWSTrustedProxies(prefixes))
-	}
-	return opts, nil
+	)
 }
 
 // startMetrics starts the Prometheus listener if WG_METRICS_LISTEN is set and
