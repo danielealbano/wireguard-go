@@ -56,7 +56,20 @@ type Peer struct {
 	cookieGenerator             CookieGenerator
 	trieEntries                 list.List
 	persistentKeepaliveInterval atomic.Uint32
+	transport                   peerTransport // carrier: udp | websocket | wstunnel
 }
+
+// peerTransport is a peer's carrier, persisted so get=1 round-trips it and an
+// incremental set that omits transport= keeps it. String-backed so it renders
+// directly and is the exact inverse of parsePeerTransport. It is a config
+// attribute, not OS logic.
+type peerTransport string
+
+const (
+	peerTransportUDP       peerTransport = "udp"
+	peerTransportWebSocket peerTransport = "websocket"
+	peerTransportWstunnel  peerTransport = "wstunnel"
+)
 
 func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 	if device.isClosed() {
