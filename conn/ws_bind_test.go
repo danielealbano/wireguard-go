@@ -8,6 +8,7 @@ package conn_test
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"testing"
 
@@ -16,47 +17,49 @@ import (
 
 func newClientBind(t *testing.T) *conn.WebSocketBind {
 	t.Helper()
-	b, err := conn.NewWebSocketBind(conn.WithWSRole(conn.WSRoleClient))
+	b, err := conn.NewWebSocketBind(conn.WithWSLogger(conn.Logger{}))
 	if err != nil {
 		t.Fatalf("NewWebSocketBind: %v", err)
 	}
 	return b
 }
 
-func TestWSEndpoint_RoundTrip(t *testing.T) {
+func TestWSEndpoint_ParseEndpoint_IPPort(t *testing.T) {
 	b := newClientBind(t)
-	for _, u := range []string{"ws://host:80/path", "wss://host:443/a/b", "wss://[::1]:443/"} {
-		ep, err := b.ParseEndpoint(u)
+	for _, s := range []string{"1.2.3.4:80", "[::1]:443", "10.0.0.9:8443"} {
+		ep, err := b.ParseEndpoint(s)
 		if err != nil {
-			t.Fatalf("ParseEndpoint(%q): %v", u, err)
+			t.Fatalf("ParseEndpoint(%q): %v", s, err)
 		}
-		if ep.DstToString() != u {
-			t.Errorf("round trip %q -> %q", u, ep.DstToString())
+		if ep.DstToString() != s {
+			t.Errorf("round trip %q -> %q", s, ep.DstToString())
 		}
-		// DstIP/DstToBytes must not panic on a zero dst.
 		_ = ep.DstIP()
 		_ = ep.DstToBytes()
+	}
+	if _, err := b.ParseEndpoint("wss://not-an-ip-port"); err == nil {
+		t.Error("ParseEndpoint should reject a non ip:port")
 	}
 }
 
 func TestWebSocketBind_ParseWSPeerEndpoint(t *testing.T) {
 	b := newClientBind(t)
+	ep := netip.MustParseAddrPort
 	tests := []struct {
 		name    string
-		url     string
-		mode    string
-		target  string
+		cfg     conn.WSPeerConfig
 		wantErr bool
 	}{
-		{name: "standard", url: "wss://h/p", mode: "standard", wantErr: false},
-		{name: "wstunnel with target", url: "wss://h/p", mode: "wstunnel", target: "1.2.3.4:51820", wantErr: false},
-		{name: "wstunnel without target", url: "wss://h/p", mode: "wstunnel", target: "", wantErr: true},
-		{name: "bad scheme", url: "http://h/p", mode: "standard", wantErr: true},
-		{name: "bad mode", url: "wss://h/p", mode: "bogus", wantErr: true},
+		{name: "websocket", cfg: conn.WSPeerConfig{Endpoint: ep("10.0.0.1:443"), Transport: "websocket", URL: "wss://h/p"}},
+		{name: "wstunnel with target", cfg: conn.WSPeerConfig{Endpoint: ep("10.0.0.1:443"), Transport: "wstunnel", URL: "wss://h/p", WstunnelTarget: "1.2.3.4:51820"}},
+		{name: "wstunnel without target", cfg: conn.WSPeerConfig{Endpoint: ep("10.0.0.1:443"), Transport: "wstunnel", URL: "wss://h/p"}, wantErr: true},
+		{name: "wstunnel_target on websocket", cfg: conn.WSPeerConfig{Endpoint: ep("10.0.0.1:443"), Transport: "websocket", URL: "wss://h/p", WstunnelTarget: "1.2.3.4:51820"}, wantErr: true},
+		{name: "bad scheme", cfg: conn.WSPeerConfig{Endpoint: ep("10.0.0.1:443"), Transport: "websocket", URL: "http://h/p"}, wantErr: true},
+		{name: "bad transport", cfg: conn.WSPeerConfig{Endpoint: ep("10.0.0.1:443"), Transport: "bogus", URL: "wss://h/p"}, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := b.ParseWSPeerEndpoint(tc.url, tc.mode, tc.target, "")
+			_, err := b.ParseWSPeerEndpoint(tc.cfg)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -64,28 +67,9 @@ func TestWebSocketBind_ParseWSPeerEndpoint(t *testing.T) {
 	}
 }
 
-func TestNewBindForTransport(t *testing.T) {
-	udp, err := conn.NewBindForTransport("")
-	if err != nil || udp == nil {
-		t.Fatalf("udp default: %v", err)
-	}
-	if _, ok := udp.(*conn.WebSocketBind); ok {
-		t.Error("empty transport should not be a WebSocketBind")
-	}
-	ws, err := conn.NewBindForTransport("ws", conn.WithWSRole(conn.WSRoleClient))
-	if err != nil {
-		t.Fatalf("ws: %v", err)
-	}
-	if _, ok := ws.(*conn.WebSocketBind); !ok {
-		t.Errorf("ws transport = %T, want *WebSocketBind", ws)
-	}
-	if _, err := conn.NewBindForTransport("bogus"); err == nil {
-		t.Error("expected error for invalid transport")
-	}
-}
-
 func TestWebSocketBind_SetMark(t *testing.T) {
 	b := newClientBind(t)
+	// No open connections: SetMark stores the mark and is a no-op re-mark (never fails).
 	if err := b.SetMark(0x1234); err != nil {
 		t.Fatalf("SetMark: %v", err)
 	}
@@ -102,14 +86,12 @@ func TestWSBind_ProtectOption(t *testing.T) {
 	var called int
 	var mu sync.Mutex
 	_, err := conn.NewWebSocketBind(
-		conn.WithWSRole(conn.WSRoleClient),
 		conn.WithWSProtect(func(fd int) { mu.Lock(); called++; mu.Unlock() }),
 	)
 	if err != nil {
 		t.Fatalf("bind with protect: %v", err)
 	}
-	// The callback is exercised per dial in the pinning tests / on-device; here we
-	// only assert the option is accepted.
+	_ = called
 }
 
 func TestWSClient_CloseUnblocksReceive(t *testing.T) {
@@ -134,7 +116,6 @@ func TestWSClient_CloseUnblocksReceive(t *testing.T) {
 			t.Errorf("receive after close = %v, want net.ErrClosed", err)
 		}
 	}
-	// Close is idempotent.
 	if err := b.Close(); err != nil {
 		t.Errorf("second Close: %v", err)
 	}

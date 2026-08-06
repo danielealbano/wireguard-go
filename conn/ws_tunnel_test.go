@@ -55,10 +55,7 @@ func TestWSClient_ConcurrentSenders(t *testing.T) {
 			}
 		}(fn)
 	}
-	ep, err := b.ParseEndpoint(bridge.url())
-	if err != nil {
-		t.Fatalf("ParseEndpoint: %v", err)
-	}
+	ep := wsClientEndpoint(t, b, bridge.url(), 0)
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
@@ -78,7 +75,6 @@ func TestWSClient_ProtectInvokedOnDial(t *testing.T) {
 	bridge := newWSBridge(t, false, true)
 	var protects atomic.Int64
 	b, err := conn.NewWebSocketBind(
-		conn.WithWSRole(conn.WSRoleClient),
 		conn.WithWSProtect(func(fd int) { protects.Add(1) }),
 	)
 	if err != nil {
@@ -96,7 +92,7 @@ func TestWSClient_ProtectInvokedOnDial(t *testing.T) {
 			}
 		}
 	}()
-	ep, _ := b.ParseEndpoint(bridge.url())
+	ep := wsClientEndpoint(t, b, bridge.url(), 0)
 	if err := b.Send([][]byte{{1, 2, 3}}, ep); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -112,7 +108,7 @@ func TestWSClient_BackoffBounded(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = b.Close() })
 	// Port 1 is refused; the first Send fails and arms the backoff.
-	ep, _ := b.ParseEndpoint("ws://127.0.0.1:1/x")
+	ep := wsClientEndpoint(t, b, "ws://127.0.0.1:1/x", 0)
 	if err := b.Send([][]byte{{1}}, ep); err == nil {
 		t.Fatal("expected dial error to a refused port")
 	}
@@ -131,10 +127,7 @@ func TestWSClient_BackoffBounded(t *testing.T) {
 
 func TestWSClient_PingTimeoutReconnect(t *testing.T) {
 	url := newWSSilentServer(t)
-	b, err := conn.NewWebSocketBind(
-		conn.WithWSRole(conn.WSRoleClient),
-		conn.WithWSPingInterval(150*time.Millisecond),
-	)
+	b, err := conn.NewWebSocketBind(conn.WithWSLogger(conn.Logger{}))
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -146,7 +139,7 @@ func TestWSClient_PingTimeoutReconnect(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = b.Close() })
-	ep, _ := b.ParseEndpoint(url)
+	ep := wsClientEndpoint(t, b, url, 150*time.Millisecond)
 	if err := b.Send([][]byte{{1}}, ep); err != nil {
 		t.Fatalf("Send: %v", err)
 	}

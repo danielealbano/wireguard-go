@@ -60,13 +60,13 @@ func TestWSUpgrade_Standard(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e := &WSEndpoint{url: "wss://host:443/path", dialect: wsDialectStandard, bearer: tc.bearer}
+			e := &WSEndpoint{wsURL: "wss://host:443/path", dialect: wsDialectStandard, bearer: tc.bearer}
 			dialURL, header, subs, err := wsUpgradeRequest(e)
 			if err != nil {
 				t.Fatalf("err: %v", err)
 			}
-			if dialURL != e.url {
-				t.Errorf("dialURL = %q, want %q", dialURL, e.url)
+			if dialURL != e.wsURL {
+				t.Errorf("dialURL = %q, want %q", dialURL, e.wsURL)
 			}
 			if got := header.Get("Authorization"); got != tc.wantAuth {
 				t.Errorf("Authorization = %q, want %q", got, tc.wantAuth)
@@ -79,7 +79,7 @@ func TestWSUpgrade_Standard(t *testing.T) {
 }
 
 func TestWSUpgrade_Wstunnel(t *testing.T) {
-	e := &WSEndpoint{url: "wss://relay.example.com/myprefix", dialect: wsDialectWstunnel, wstunnelTarget: "10.0.0.5:51820"}
+	e := &WSEndpoint{wsURL: "wss://relay.example.com/myprefix", dialect: wsDialectWstunnel, wstunnelTarget: "10.0.0.5:51820"}
 	dialURL, _, subs, err := wsUpgradeRequest(e)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -126,7 +126,7 @@ func TestWSUpgrade_WstunnelDefaultPrefix(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e := &WSEndpoint{url: tc.url, dialect: wsDialectWstunnel, wstunnelTarget: "10.0.0.5:51820"}
+			e := &WSEndpoint{wsURL: tc.url, dialect: wsDialectWstunnel, wstunnelTarget: "10.0.0.5:51820"}
 			dialURL, _, _, err := wsUpgradeRequest(e)
 			if err != nil {
 				t.Fatalf("err: %v", err)

@@ -25,7 +25,7 @@ func TestDevice_HandshakeCounters(t *testing.T) {
 func TestDevice_IterPeerStats(t *testing.T) {
 	dev := newWSTestDevice(t, conn.NewDefaultBind(), nil)
 	pkHex := randKeyHex(t)
-	if err := dev.IpcSet("private_key=" + randKeyHex(t) + "\npublic_key=" + pkHex + "\n"); err != nil {
+	if err := dev.IpcSet("private_key=" + randKeyHex(t) + "\npublic_key=" + pkHex + "\ntransport=udp\n"); err != nil {
 		t.Fatalf("IpcSet: %v", err)
 	}
 	var pk NoisePublicKey
