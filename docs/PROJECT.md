@@ -183,7 +183,7 @@ Direct commands used for the quality gates (see `go.md` §4):
   interop contracts).
 - `tests/e2e/` runs **real-daemon end-to-end tunnels** across Linux network namespaces (`//go:build linux
   && e2e`; Linux + root) for UDP, WebSocket (self-signed wss), and wstunnel — both the default **unmasked**
-  path and the opt-in **`ws_mask`** path (client `WG_WS_MASK=1` ⇄ wstunnel `--websocket-mask-frame`), using
+  path and the opt-in **`ws_mask`** path (per-peer `ws_mask=true` ⇄ wstunnel `--websocket-mask-frame`), using
   the real wstunnel binary via `WSTUNNEL_BIN`; the daemon under test is `WG_GO_BIN`. Run with `make test-e2e`.
   The netns e2e is **Linux-only by design** (network namespaces + veth have no Windows/macOS/BSD equivalent);
   those targets are covered by the in-process integration tests (all GOOS) and the compile-only build jobs.
