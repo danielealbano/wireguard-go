@@ -8,6 +8,7 @@ package conn
 import (
 	"net/netip"
 	"testing"
+	"time"
 )
 
 // TestWSEndpoint_DstToString_ClientResolved: a dialing endpoint reports its resolved
@@ -60,5 +61,46 @@ func TestWSEndpoint_WSPeerKVs(t *testing.T) {
 	}
 	if len((&WSEndpoint{dst: netip.MustParseAddrPort("1.2.3.4:5")}).WSPeerKVs()) != 0 {
 		t.Error("inbound endpoint should emit no ws_* keys")
+	}
+}
+
+// TestParseWSPeerEndpoint_TimingDefaults verifies the per-peer timings normalize to the
+// package defaults when the ws_ping_interval / ws_backoff_* keys are absent (so pingLoop
+// keeps pinging and backoff is non-zero) and are honored when set. It also checks the
+// plain ParseEndpoint(ip:port) path applies the same defaults.
+func TestParseWSPeerEndpoint_TimingDefaults(t *testing.T) {
+	b, err := NewWebSocketBind(WithWSLogger(Logger{}))
+	if err != nil {
+		t.Fatalf("NewWebSocketBind: %v", err)
+	}
+	base := WSPeerConfig{Endpoint: netip.MustParseAddrPort("10.0.0.1:443"), Transport: "websocket", URL: "wss://h/p"}
+
+	epDef, err := b.ParseWSPeerEndpoint(base)
+	if err != nil {
+		t.Fatalf("ParseWSPeerEndpoint(defaults): %v", err)
+	}
+	we := epDef.(*WSEndpoint)
+	if we.pingInterval != wsDefaultPingInterval || we.backoffMin != wsDefaultBackoffMin || we.backoffMax != wsDefaultBackoffMax {
+		t.Errorf("defaults not applied: ping=%v min=%v max=%v", we.pingInterval, we.backoffMin, we.backoffMax)
+	}
+
+	set := base
+	set.PingInterval, set.BackoffMin, set.BackoffMax = 7*time.Second, 100*time.Millisecond, 9*time.Second
+	epSet, err := b.ParseWSPeerEndpoint(set)
+	if err != nil {
+		t.Fatalf("ParseWSPeerEndpoint(set): %v", err)
+	}
+	we = epSet.(*WSEndpoint)
+	if we.pingInterval != 7*time.Second || we.backoffMin != 100*time.Millisecond || we.backoffMax != 9*time.Second {
+		t.Errorf("explicit timings not honored: ping=%v min=%v max=%v", we.pingInterval, we.backoffMin, we.backoffMax)
+	}
+
+	epPlain, err := b.ParseEndpoint("10.0.0.1:443")
+	if err != nil {
+		t.Fatalf("ParseEndpoint: %v", err)
+	}
+	we = epPlain.(*WSEndpoint)
+	if we.pingInterval != wsDefaultPingInterval || we.backoffMin != wsDefaultBackoffMin || we.backoffMax != wsDefaultBackoffMax {
+		t.Errorf("ParseEndpoint defaults not applied: ping=%v min=%v max=%v", we.pingInterval, we.backoffMin, we.backoffMax)
 	}
 }
