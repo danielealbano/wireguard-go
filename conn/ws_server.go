@@ -6,8 +6,8 @@
 package conn
 
 import (
-	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,27 +16,38 @@ import (
 	"github.com/gobwas/ws"
 )
 
-func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound chan wsInbound, done <-chan struct{}) ([]ReceiveFunc, uint16, error) {
-	// openServer is called from Open under b.mu, so this read is synchronized with
-	// SetWSListen; capture a local so the serve goroutine below never touches the field.
+// openServer starts the HTTP/WS listener for ws_listen. It is called from Open
+// under b.mu (only when ws_listen is set); it captures the device-level server
+// config into per-serve LOCALS so the serve goroutine and per-request handlers
+// close over immutable copies — a later UAPI change takes effect on the next
+// BindUpdate re-open, avoiding races with the server setters.
+func (b *WebSocketBind) openServer(inbound chan wsInbound, done <-chan struct{}) error {
 	listenURL := b.cfg.listenURL
-	if listenURL == "" {
-		// No ws_listen configured yet: bring the bind up with a receiver but no HTTP
-		// server. Setting ws_listen via UAPI triggers BindUpdate, which re-opens here
-		// with the listener. (A device can go Up before ws_listen is set.)
-		return []ReceiveFunc{makeWSReceiveFunc(inbound, done)}, port, nil
-	}
+	serverBearer := b.cfg.serverBearer
+	trustedProxies := b.cfg.trustedProxies
+	certPath, keyPath := b.cfg.serverCertPath, b.cfg.serverKeyPath
+
 	u, err := url.Parse(listenURL)
 	if err != nil {
-		return nil, 0, err
+		return err
 	}
 	if u.Path == "" {
 		u.Path = "/" // http.ServeMux panics on an empty pattern
 	}
+
+	var tlsConfig *tls.Config
+	if certPath != "" && keyPath != "" {
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return fmt.Errorf("ws server tls: %w", err)
+		}
+		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	}
+
 	b.sconns = make(map[uint64]*wsServerConn)
 	mux := http.NewServeMux()
 	mux.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
-		if !b.checkBearer(r) {
+		if !checkBearer(r, serverBearer) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -50,7 +61,7 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 		if err := markConn(netConn, b.mark.Load()); err != nil {
 			b.cfg.logger.errorf("websocket: mark accepted socket: %v", err)
 		}
-		dst := resolveClientAddr(r, b.cfg.trustedProxies)
+		dst := resolveClientAddr(r, trustedProxies)
 		b.mu.Lock()
 		if b.closed {
 			b.mu.Unlock()
@@ -71,24 +82,23 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 		b.serverReadLoop(sc, &WSEndpoint{dst: dst, connID: id}, inbound, done)
 	})
 	srv := &http.Server{Handler: mux}
-	if b.cfg.tlsServer != nil {
-		srv.TLSConfig = b.cfg.tlsServer // certs come from tlsServer
+	if tlsConfig != nil {
+		srv.TLSConfig = tlsConfig
 	}
 	b.srv = srv // stored under b.mu (Open); Close reads it under b.mu to shut down
 	ln, err := net.Listen("tcp", u.Host)
 	if err != nil {
-		return nil, 0, err
+		return err
 	}
-	// The serve goroutine references only the srv/ln locals — never the b.srv field —
-	// so Close nil-ing b.srv cannot race with it. It is tracked on readWG so Close's
-	// Wait() joins it: srv.Close() makes Serve return and release the listener, so the
-	// port is free before Close returns (required for a BindUpdate re-Open on the same
-	// listen address). Add is under b.mu (Open) with the closed check, like the others.
+	// The serve goroutine references only srv/ln/useTLS locals — never b.srv or
+	// b.cfg.serverCertPath — so Close nil-ing b.srv and a concurrent SetServerTLS
+	// cannot race with it. Tracked on readWG so Close's Wait() joins it.
+	useTLS := tlsConfig != nil
 	b.readWG.Add(1)
 	go func() {
 		defer b.readWG.Done()
 		var serveErr error
-		if b.cfg.tlsServer != nil {
+		if useTLS {
 			serveErr = srv.ServeTLS(ln, "", "")
 		} else {
 			serveErr = srv.Serve(ln)
@@ -97,19 +107,21 @@ func (b *WebSocketBind) openServer(ctx context.Context, port uint16, inbound cha
 			b.cfg.logger.errorf("websocket server on %s stopped: %v", listenURL, serveErr)
 		}
 	}()
-	return []ReceiveFunc{makeWSReceiveFunc(inbound, done)}, port, nil
+	return nil
 }
 
-func (b *WebSocketBind) checkBearer(r *http.Request) bool {
-	if b.cfg.serverBearer == "" {
-		return true // gate off (no bearer configured)
+// checkBearer is a coarse constant-time gate; expected is the captured per-serve
+// local (empty => gate off). The bearer value is NEVER logged.
+func checkBearer(r *http.Request, expected string) bool {
+	if expected == "" {
+		return true
 	}
 	const p = "Bearer "
 	h := r.Header.Get("Authorization")
 	if len(h) <= len(p) || h[:len(p)] != p {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(h[len(p):]), []byte(b.cfg.serverBearer)) == 1
+	return subtle.ConstantTimeCompare([]byte(h[len(p):]), []byte(expected)) == 1
 }
 
 func (b *WebSocketBind) serverReadLoop(sc *wsServerConn, ep *WSEndpoint, inbound chan<- wsInbound, done <-chan struct{}) {

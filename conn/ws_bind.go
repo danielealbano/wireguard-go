@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -17,7 +18,9 @@ import (
 )
 
 // WebSocketBind tunnels the WireGuard wire protocol over ws:// / wss:// instead of
-// UDP, in client or server role (selected by cfg.role at construction).
+// UDP. It has no fixed role: it listens whenever ws_listen is configured AND dials
+// out to any peer that carries a ws_url, both at once — mirroring UDP's single
+// socket that both listens on listen_port and sends to peer endpoints.
 //
 // All fields (client + server) are declared here; the client/server methods that
 // populate them live in ws_client.go / ws_server.go.
@@ -71,12 +74,16 @@ type wsBackoff struct {
 }
 
 // WebSocketBinder is type-asserted by the device UAPI handler to build WebSocket
-// peer endpoints and set the server listen URL from the additive UAPI keys,
-// mirroring how conn.PeekLookAtSocketFd is type-asserted elsewhere. It keeps the
-// WebSocket specifics out of the device core.
+// peer endpoints and set the device-level server/listener config from the additive
+// UAPI keys, mirroring how conn.PeekLookAtSocketFd is type-asserted elsewhere. It
+// keeps the WebSocket specifics out of the device core.
 type WebSocketBinder interface {
 	SetWSListen(rawURL string) error
-	ParseWSPeerEndpoint(rawURL, mode, wstunnelTarget, bearer string) (Endpoint, error)
+	ParseWSPeerEndpoint(cfg WSPeerConfig) (Endpoint, error)
+	SetServerCertPath(path string)
+	SetServerKeyPath(path string)
+	SetServerBearer(tok string)
+	SetTrustedProxies(p []netip.Prefix)
 }
 
 var (
@@ -84,13 +91,29 @@ var (
 	_ WebSocketBinder = (*WebSocketBind)(nil)
 )
 
-// NewWebSocketBind constructs a WebSocket bind from functional options.
+// WSPeerConfig carries a peer's per-connection WebSocket settings from the UAPI.
+// All fields are exported and the dialect is conveyed as the Transport string, so
+// the device package can construct it without touching conn internals.
+type WSPeerConfig struct {
+	Endpoint       netip.AddrPort // resolved ip:port to dial (from endpoint=)
+	Transport      string         // "websocket" | "wstunnel"
+	URL            string         // ws_url
+	WstunnelTarget string
+	Bearer         string
+	Mask           bool
+	TLSCAPath      string
+	TLSCertPath    string
+	TLSKeyPath     string
+	TLSInsecure    bool
+	PingInterval   time.Duration
+	BackoffMin     time.Duration
+	BackoffMax     time.Duration
+}
+
+// NewWebSocketBind constructs a WebSocket bind from functional options. Tunnel
+// config (client per-peer + server/listener) arrives later via the UAPI.
 func NewWebSocketBind(opts ...WSOption) (*WebSocketBind, error) {
-	cfg := wsConfig{
-		pingInterval: wsDefaultPingInterval,
-		backoffMin:   wsDefaultBackoffMin,
-		backoffMax:   wsDefaultBackoffMax,
-	}
+	var cfg wsConfig
 	for _, o := range opts {
 		if err := o(&cfg); err != nil {
 			return nil, err
@@ -101,31 +124,61 @@ func NewWebSocketBind(opts ...WSOption) (*WebSocketBind, error) {
 
 func (b *WebSocketBind) BatchSize() int { return 1 }
 
+// ParseEndpoint satisfies conn.Bind for a plain ip:port (no ws_url). The primary
+// WS path is ParseWSPeerEndpoint; in the daemon plain endpoints route to UDP via
+// the multiplex bind, so this only serves standalone/library WebSocketBind use.
 func (b *WebSocketBind) ParseEndpoint(s string) (Endpoint, error) {
-	return b.ParseWSPeerEndpoint(s, "standard", "", "")
+	ap, err := netip.ParseAddrPort(s)
+	if err != nil {
+		return nil, fmt.Errorf("invalid websocket endpoint %q: %w", s, err)
+	}
+	return &WSEndpoint{
+		dialTarget:   ap,
+		pingInterval: wsDefaultPingInterval,
+		backoffMin:   wsDefaultBackoffMin,
+		backoffMax:   wsDefaultBackoffMax,
+	}, nil
 }
 
-func (b *WebSocketBind) ParseWSPeerEndpoint(rawURL, mode, wstunnelTarget, bearer string) (Endpoint, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid websocket endpoint %q: %w", rawURL, err)
+// ParseWSPeerEndpoint builds a dialing WSEndpoint from the per-peer UAPI settings.
+// The internal dialect is derived from cfg.Transport.
+func (b *WebSocketBind) ParseWSPeerEndpoint(cfg WSPeerConfig) (Endpoint, error) {
+	if cfg.URL != "" {
+		if u, err := url.Parse(cfg.URL); err != nil || (u.Scheme != "ws" && u.Scheme != "wss") {
+			return nil, fmt.Errorf("invalid ws_url %q: scheme must be ws or wss", cfg.URL)
+		}
 	}
-	if u.Scheme != "ws" && u.Scheme != "wss" {
-		return nil, fmt.Errorf("invalid websocket endpoint %q: scheme must be ws or wss", rawURL)
+	e := &WSEndpoint{
+		wsURL: cfg.URL, dialTarget: cfg.Endpoint, wstunnelTarget: cfg.WstunnelTarget,
+		bearer: cfg.Bearer, mask: cfg.Mask, tlsCAPath: cfg.TLSCAPath,
+		tlsCertPath: cfg.TLSCertPath, tlsKeyPath: cfg.TLSKeyPath, tlsInsecure: cfg.TLSInsecure,
 	}
-	e := &WSEndpoint{url: rawURL, wstunnelTarget: wstunnelTarget, bearer: bearer}
-	switch mode {
-	case "", "standard":
+	switch cfg.Transport {
+	case "websocket":
 		e.dialect = wsDialectStandard
+		if cfg.WstunnelTarget != "" {
+			return nil, fmt.Errorf("wstunnel_target requires transport=wstunnel")
+		}
 	case "wstunnel":
 		e.dialect = wsDialectWstunnel
-		if wstunnelTarget == "" {
-			return nil, fmt.Errorf("ws_mode=wstunnel requires wstunnel_target")
+		if cfg.WstunnelTarget == "" {
+			return nil, fmt.Errorf("transport=wstunnel requires wstunnel_target")
 		}
 	default:
-		return nil, fmt.Errorf("invalid ws_mode %q", mode)
+		return nil, fmt.Errorf("invalid websocket transport %q", cfg.Transport)
 	}
+	e.pingInterval = orDefault(cfg.PingInterval, wsDefaultPingInterval)
+	e.backoffMin = orDefault(cfg.BackoffMin, wsDefaultBackoffMin)
+	e.backoffMax = orDefault(cfg.BackoffMax, wsDefaultBackoffMax)
 	return e, nil
+}
+
+// orDefault returns def when d is zero.
+func orDefault(d, def time.Duration) time.Duration {
+	if d == 0 {
+		return def
+	}
+	return d
 }
 
 // SetMark stores the mark for future dials/accepts AND re-applies it to every
@@ -171,4 +224,61 @@ func (b *WebSocketBind) WSListenURL() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.cfg.listenURL
+}
+
+// SetServerCertPath / SetServerKeyPath store the server TLS material as paths;
+// openServer loads the keypair at Open, so a live serve goroutine reads a local
+// config and never b.cfg. Guarded by b.mu (openServer reads under b.mu; BindUpdate
+// may run concurrently with the UAPI write). No cross-line buffering is needed.
+func (b *WebSocketBind) SetServerCertPath(path string) {
+	b.mu.Lock()
+	b.cfg.serverCertPath = path
+	b.mu.Unlock()
+}
+
+func (b *WebSocketBind) SetServerKeyPath(path string) {
+	b.mu.Lock()
+	b.cfg.serverKeyPath = path
+	b.mu.Unlock()
+}
+
+func (b *WebSocketBind) SetServerBearer(tok string) {
+	b.mu.Lock()
+	b.cfg.serverBearer = tok
+	b.mu.Unlock()
+}
+
+func (b *WebSocketBind) SetTrustedProxies(p []netip.Prefix) {
+	b.mu.Lock()
+	b.cfg.trustedProxies = p
+	b.mu.Unlock()
+}
+
+// WSServerTLSPaths / WSServerBearer / WSTrustedProxies report the device-level
+// server settings so IpcGet can round-trip them.
+func (b *WebSocketBind) WSServerTLSPaths() (cert, key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cfg.serverCertPath, b.cfg.serverKeyPath
+}
+
+func (b *WebSocketBind) WSServerBearer() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cfg.serverBearer
+}
+
+func (b *WebSocketBind) WSTrustedProxies() []netip.Prefix {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cfg.trustedProxies
+}
+
+// WSInUse reports whether the WebSocket transport is actually carrying anything —
+// a configured listener or any open connection. The daemon's path monitor uses it
+// to avoid reopening a pure-UDP bind on a network change (UDP path unchanged).
+func (b *WebSocketBind) WSInUse() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cfg.listenURL != "" || len(b.conns) > 0 || len(b.sconns) > 0
 }

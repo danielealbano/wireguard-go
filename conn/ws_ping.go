@@ -11,16 +11,16 @@ import (
 	"github.com/gobwas/ws"
 )
 
-// pingLoop writes an OpPing every cfg.pingInterval and waits for the read loop to
-// signal the matching pong, bounded by pingInterval so a silent/half-open peer (no
+// pingLoop writes an OpPing every ep.pingInterval and waits for the read loop to
+// signal the matching pong, bounded by that interval so a silent/half-open peer (no
 // pong) is detected. On write failure or pong timeout it closes the connection —
 // unblocking the read loop so the next Send re-dials — and cancels the per-connection
 // ctx. It exits when that ctx is cancelled (drop or bind Close). It records RTT.
 func (b *WebSocketBind) pingLoop(c *wsClientConn) {
-	if b.cfg.pingInterval <= 0 {
+	if c.ep.pingInterval <= 0 {
 		return
 	}
-	t := time.NewTicker(b.cfg.pingInterval)
+	t := time.NewTicker(c.ep.pingInterval)
 	defer t.Stop()
 	fail := func(format string, args ...any) {
 		if c.ctx.Err() == nil { // a real ping failure/timeout, not a bind close
@@ -42,7 +42,7 @@ func (b *WebSocketBind) pingLoop(c *wsClientConn) {
 			select {
 			case <-c.pong:
 				b.metrics.observeRTT(c.ep.DstToString(), time.Since(start).Seconds())
-			case <-time.After(b.cfg.pingInterval):
+			case <-time.After(c.ep.pingInterval):
 				fail("websocket pong from %s timed out, will reconnect", c.ep.DstToString())
 				return
 			case <-c.ctx.Done():

@@ -6,18 +6,8 @@
 package conn
 
 import (
-	"crypto/tls"
 	"net/netip"
 	"time"
-)
-
-// WSRole selects whether the WebSocket bind dials peers (client) or listens for
-// incoming connections (server). It is fixed at bind construction.
-type WSRole int
-
-const (
-	WSRoleClient WSRole = iota
-	WSRoleServer
 )
 
 // Logger is the minimal logging surface the WebSocket bind needs, modeled as func
@@ -51,45 +41,25 @@ const (
 	wsReadLimit = 1 << 16
 )
 
+// wsConfig holds the device/listener-level WebSocket settings. Per-peer client
+// settings (ws_url, TLS, mask, timings) live on WSEndpoint, not here. Server/
+// listener settings arrive via the device-level UAPI setters, not env.
 type wsConfig struct {
-	role           WSRole
 	listenURL      string
-	tlsClient      *tls.Config
-	tlsServer      *tls.Config
-	serverBearer   string // server role: expected Bearer (coarse gate); empty = gate off. NEVER logged.
-	pingInterval   time.Duration
-	backoffMin     time.Duration
-	backoffMax     time.Duration
+	serverCertPath string // ws_server_tls_cert; loaded at openServer
+	serverKeyPath  string // ws_server_tls_key
+	serverBearer   string // expected Bearer (coarse gate); empty = gate off. NEVER logged.
 	trustedProxies []netip.Prefix
 	protect        func(fd int)
-	maskFrames     bool // client role: mask outgoing WebSocket frames (default off, unmasked)
 	logger         Logger
 }
 
-// WSOption configures a WebSocketBind (functional options).
+// WSOption configures a WebSocketBind (functional options). Only the construction-
+// time dependencies remain as options; all tunnel config arrives via the UAPI.
 type WSOption func(*wsConfig) error
 
-func WithWSRole(r WSRole) WSOption { return func(c *wsConfig) error { c.role = r; return nil } }
-func WithWSClientTLS(t *tls.Config) WSOption {
-	return func(c *wsConfig) error { c.tlsClient = t; return nil }
-}
-func WithWSServerTLS(t *tls.Config) WSOption {
-	return func(c *wsConfig) error { c.tlsServer = t; return nil }
-}
-func WithWSServerBearer(tok string) WSOption {
-	return func(c *wsConfig) error { c.serverBearer = tok; return nil }
-}
-func WithWSListenURL(u string) WSOption {
-	return func(c *wsConfig) error { c.listenURL = u; return nil }
-}
-func WithWSPingInterval(d time.Duration) WSOption {
-	return func(c *wsConfig) error { c.pingInterval = d; return nil }
-}
-func WithWSTrustedProxies(p []netip.Prefix) WSOption {
-	return func(c *wsConfig) error { c.trustedProxies = p; return nil }
-}
 func WithWSProtect(fn func(fd int)) WSOption {
 	return func(c *wsConfig) error { c.protect = fn; return nil }
 }
-func WithWSMask(on bool) WSOption    { return func(c *wsConfig) error { c.maskFrames = on; return nil } }
+
 func WithWSLogger(l Logger) WSOption { return func(c *wsConfig) error { c.logger = l; return nil } }
