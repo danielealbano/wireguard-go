@@ -759,4 +759,20 @@ This overrides nothing in `development_pipeline.md` except to INSERT one explici
 
 ## Deviations
 
-_(none yet — record here during implementation per agent.md §2: task/action reference + what changed + why.)_
+- **US6 / test-writing order.** Production code (US1–US7) was implemented first, then ALL tests were
+  migrated/written together, rather than strictly per-story. Why: US2–US5 repeatedly reshape the same
+  `WSEndpoint`/`ParseWSPeerEndpoint`/UAPI surfaces, so tests written per-story would have been rewritten
+  several times. Quality gates still run once at the end (US9). No coverage was dropped.
+- **US2 / `conn/ws_endpoint.go` — `dstAddrPort`.** The plan distinguished client vs server endpoints by
+  `wsURL != ""`, but a plain `ParseEndpoint(ip:port)` endpoint has a `dialTarget` and no `wsURL`, which
+  reported a zero address. Changed to `dialTarget.IsValid()`. (Commit `f97f7da`.)
+- **US5 / `device/uapi.go` — `ws_server_bearer`/`ws_trusted_proxies` BindUpdate.** The plan had only
+  `ws_server_tls_cert/key` trigger `BindUpdate`. A setconf that orders `ws_listen` before the server
+  keys (device up) opened the listener before the bearer/proxies were applied, so the running listener
+  missed them. Fix: those two keys also `BindUpdate`, so the listener always reflects the complete
+  server config regardless of key order. (Commit `a0235d2`.)
+- **US5 / duration encoding.** `ws_ping_interval`/`ws_backoff_min`/`ws_backoff_max` are encoded as
+  integer **milliseconds** on the wire (the plan left the unit unspecified); `get=1` emits and `set=1`
+  parses milliseconds, so they round-trip.
+- **US8 / ARCHITECTURE.md Mermaid.** One node label in the existing WebSocket chart was updated
+  (`egress pin` → `fwmark`); validated with `make mermaid-check` (exit 0).
