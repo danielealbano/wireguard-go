@@ -9,15 +9,17 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -135,13 +137,45 @@ func (b *wsBridge) dropAll() {
 	b.peers = nil
 }
 
-func (b *wsBridge) clientTLS() *tls.Config {
+// caPath writes the bridge's server certificate to a temp PEM file and returns the
+// path, for use as the per-peer ws_tls_ca. Empty when the bridge is plaintext.
+func (b *wsBridge) caPath(t *testing.T) string {
+	t.Helper()
 	if b.srv.TLS == nil {
-		return nil
+		return ""
 	}
-	cp := x509.NewCertPool()
-	cp.AddCert(b.srv.Certificate())
-	return &tls.Config{RootCAs: cp}
+	block := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: b.srv.Certificate().Raw})
+	p := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(p, block, 0o600); err != nil {
+		t.Fatalf("write ca: %v", err)
+	}
+	return p
+}
+
+// wsURLHost returns the host:port of a ws(s):// URL (the resolved dial endpoint).
+func wsURLHost(t *testing.T, wsURL string) string {
+	t.Helper()
+	u, err := url.Parse(wsURL)
+	if err != nil {
+		t.Fatalf("parse ws url: %v", err)
+	}
+	return u.Host
+}
+
+// wsClientEndpoint builds a dialing websocket endpoint for wsURL (its host is the
+// dial target ip:port), with the given per-peer ping interval (0 => default).
+func wsClientEndpoint(t *testing.T, b *conn.WebSocketBind, wsURL string, ping time.Duration) conn.Endpoint {
+	t.Helper()
+	ep, err := b.ParseWSPeerEndpoint(conn.WSPeerConfig{
+		Endpoint:     netip.MustParseAddrPort(wsURLHost(t, wsURL)),
+		Transport:    "websocket",
+		URL:          wsURL,
+		PingInterval: ping,
+	})
+	if err != nil {
+		t.Fatalf("ParseWSPeerEndpoint(%q): %v", wsURL, err)
+	}
+	return ep
 }
 
 // newWSSilentServer upgrades then drains without ever ponging, so the client ping
@@ -162,7 +196,7 @@ func newWSSilentServer(t *testing.T) string {
 
 // newWSMaskProbe upgrades one client and reports the mask bit of the first binary
 // frame it receives, so a test can assert the client bind's masking behaviour
-// (unmasked by default; masked with WithWSMask(true)).
+// (unmasked by default; masked when the per-peer ws_mask key is set).
 func newWSMaskProbe(t *testing.T) (url string, masked <-chan bool) {
 	t.Helper()
 	ch := make(chan bool, 1)
@@ -218,23 +252,24 @@ func wgKeypair(t *testing.T) (priv, pub string) {
 func newWSDevicePair(t *testing.T, useTLS bool) (a, b *tuntest.ChannelTUN, bridge *wsBridge) {
 	t.Helper()
 	br := newWSBridge(t, useTLS, false)
+	caPath := br.caPath(t)
+	host := wsURLHost(t, br.url())
 	priv1, pub1 := wgKeypair(t)
 	priv2, pub2 := wgKeypair(t)
 	mk := func(ip byte, selfPriv, peerPub string) *tuntest.ChannelTUN {
 		tdev := tuntest.NewChannelTUN()
-		wsb, err := conn.NewWebSocketBind(
-			conn.WithWSRole(conn.WSRoleClient),
-			conn.WithWSClientTLS(br.clientTLS()),
-			conn.WithWSPingInterval(0),
-		)
+		wsb, err := conn.NewWebSocketBind(conn.WithWSLogger(conn.Logger{}))
 		if err != nil {
 			t.Fatalf("bind: %v", err)
 		}
 		d := device.NewDevice(tdev.TUN(), wsb, device.NewLogger(device.LogLevelError, ""))
 		cfg := fmt.Sprintf(
-			"private_key=%s\npublic_key=%s\nendpoint=%s\npersistent_keepalive_interval=1\nallowed_ip=1.0.0.%d/32\n",
-			selfPriv, peerPub, br.url(), ip,
+			"private_key=%s\npublic_key=%s\ntransport=websocket\nendpoint=%s\nws_url=%s\npersistent_keepalive_interval=1\nallowed_ip=1.0.0.%d/32\n",
+			selfPriv, peerPub, host, br.url(), ip,
 		)
+		if caPath != "" {
+			cfg += "ws_tls_ca=" + caPath + "\n"
+		}
 		if err := d.IpcSet(cfg); err != nil {
 			t.Fatalf("IpcSet: %v", err)
 		}

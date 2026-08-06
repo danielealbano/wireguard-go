@@ -147,7 +147,7 @@ func newUDPServerDevice(t *testing.T, selfPriv, peerPub string) (*tuntest.Channe
 	t.Helper()
 	tdev := tuntest.NewChannelTUN()
 	d := device.NewDevice(tdev.TUN(), conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, ""))
-	cfg := fmt.Sprintf("private_key=%s\nlisten_port=0\npublic_key=%s\nallowed_ip=1.0.0.1/32\n", selfPriv, peerPub)
+	cfg := fmt.Sprintf("private_key=%s\nlisten_port=0\npublic_key=%s\ntransport=udp\nallowed_ip=1.0.0.1/32\n", selfPriv, peerPub)
 	if err := d.IpcSet(cfg); err != nil {
 		t.Fatalf("server IpcSet: %v", err)
 	}
@@ -160,18 +160,20 @@ func newUDPServerDevice(t *testing.T, selfPriv, peerPub string) (*tuntest.Channe
 
 // newWSClientDevice brings up a WebSocket client WireGuard device in wstunnel mode,
 // dialing endpoint and asking the relay to forward to target (host:port).
-func newWSClientDevice(t *testing.T, selfPriv, peerPub, endpoint, target string, opts ...conn.WSOption) *tuntest.ChannelTUN {
+func newWSClientDevice(t *testing.T, selfPriv, peerPub, wsURL, target string, mask bool) *tuntest.ChannelTUN {
 	t.Helper()
 	tdev := tuntest.NewChannelTUN()
-	all := append([]conn.WSOption{conn.WithWSRole(conn.WSRoleClient)}, opts...)
-	bind, err := conn.NewWebSocketBind(all...)
+	bind, err := conn.NewWebSocketBind(conn.WithWSLogger(conn.Logger{}))
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	d := device.NewDevice(tdev.TUN(), bind, device.NewLogger(device.LogLevelError, ""))
 	cfg := fmt.Sprintf(
-		"private_key=%s\npublic_key=%s\nendpoint=%s\nws_mode=wstunnel\nwstunnel_target=%s\nallowed_ip=1.0.0.2/32\npersistent_keepalive_interval=1\n",
-		selfPriv, peerPub, endpoint, target)
+		"private_key=%s\npublic_key=%s\ntransport=wstunnel\nendpoint=%s\nws_url=%s\nwstunnel_target=%s\nallowed_ip=1.0.0.2/32\npersistent_keepalive_interval=1\n",
+		selfPriv, peerPub, wsURLHost(t, wsURL), wsURL, target)
+	if mask {
+		cfg += "ws_mask=true\n"
+	}
 	if err := d.IpcSet(cfg); err != nil {
 		t.Fatalf("client IpcSet: %v", err)
 	}
@@ -215,7 +217,7 @@ func TestWstunnelMode_UnmaskedDefault_Handshake(t *testing.T) {
 	priv2, pub2 := wgKeypair(t)
 	srv, port := newUDPServerDevice(t, priv2, pub1)
 	fake := newFakeWstunnel(t, false) // default wstunnel: does NOT unmask
-	cli := newWSClientDevice(t, priv1, pub2, fake.url(), wstunnelTarget(port))
+	cli := newWSClientDevice(t, priv1, pub2, fake.url(), wstunnelTarget(port), false)
 	wsAssertPing(t, cli, srv, [4]byte{1, 0, 0, 1}, [4]byte{1, 0, 0, 2}, 10*time.Second)
 }
 
@@ -224,7 +226,7 @@ func TestWstunnelMode_MaskedVsDefaultServer_Fails(t *testing.T) {
 	priv2, pub2 := wgKeypair(t)
 	srv, port := newUDPServerDevice(t, priv2, pub1)
 	fake := newFakeWstunnel(t, false) // does NOT unmask -> masked client => garbage
-	cli := newWSClientDevice(t, priv1, pub2, fake.url(), wstunnelTarget(port), conn.WithWSMask(true))
+	cli := newWSClientDevice(t, priv1, pub2, fake.url(), wstunnelTarget(port), true)
 	wsAssertPingFails(t, cli, srv, [4]byte{1, 0, 0, 1}, [4]byte{1, 0, 0, 2}, 3*time.Second)
 }
 
@@ -233,7 +235,7 @@ func TestWstunnelMode_MaskedVsMaskingServer_Handshake(t *testing.T) {
 	priv2, pub2 := wgKeypair(t)
 	srv, port := newUDPServerDevice(t, priv2, pub1)
 	fake := newFakeWstunnel(t, true) // --websocket-mask-frame: unmasks
-	cli := newWSClientDevice(t, priv1, pub2, fake.url(), wstunnelTarget(port), conn.WithWSMask(true))
+	cli := newWSClientDevice(t, priv1, pub2, fake.url(), wstunnelTarget(port), true)
 	wsAssertPing(t, cli, srv, [4]byte{1, 0, 0, 1}, [4]byte{1, 0, 0, 2}, 10*time.Second)
 }
 
@@ -243,6 +245,6 @@ func TestWstunnelMode_WrongPrefix_NoHandshake(t *testing.T) {
 	srv, port := newUDPServerDevice(t, priv2, pub1)
 	fake := newFakeWstunnel(t, false)
 	// endpoint with a non-v1 path => /wrong/events, which the fake serves 404 for.
-	cli := newWSClientDevice(t, priv1, pub2, fake.url()+"/wrong", wstunnelTarget(port))
+	cli := newWSClientDevice(t, priv1, pub2, fake.url()+"/wrong", wstunnelTarget(port), false)
 	wsAssertPingFails(t, cli, srv, [4]byte{1, 0, 0, 1}, [4]byte{1, 0, 0, 2}, 3*time.Second)
 }

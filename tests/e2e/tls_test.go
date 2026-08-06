@@ -24,7 +24,7 @@ import (
 
 // genServerCert generates a self-signed P-256 cert with an IP SAN and writes cert.pem
 // and key.pem to t.TempDir(), returning their paths. The WS server uses cert+key
-// (WG_WS_TLS_CERT/KEY); the client trusts cert.pem as its CA (WG_WS_TLS_CA).
+// (ws_server_tls_cert/ws_server_tls_key); the client trusts cert.pem as its CA (ws_tls_ca).
 func genServerCert(t *testing.T, ip string) (certPath, keyPath string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

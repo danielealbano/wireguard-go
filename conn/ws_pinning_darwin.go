@@ -7,38 +7,20 @@
 
 package conn
 
-import (
-	"syscall"
+import "syscall"
 
-	"golang.org/x/sys/unix"
-)
-
-// dialControl binds each dialed socket to the physical egress interface via
-// IP_BOUND_IF / IPV6_BOUND_IF, and invokes the optional protect callback, so the
-// WebSocket transport does not loop back into the tun. Recomputed on every dial.
+// dialControl on darwin only invokes the optional protect callback. Keeping the
+// WebSocket transport off the tun under a full-tunnel is wg-quick's job: it
+// host-routes the endpoint ip:port via the physical gateway
+// (set_endpoint_direct_route), exactly as it does for UDP — and endpoint= is now a
+// routable ip:port. wireguard-go adds no routing/pinning here; an IP_BOUND_IF pin
+// would be harmful under full-tunnel (the default route can be the utun, and
+// IP_BOUND_IF overrides the routing table).
 func (b *WebSocketBind) dialControl() func(network, address string, c syscall.RawConn) error {
+	if b.cfg.protect == nil {
+		return nil
+	}
 	return func(network, address string, c syscall.RawConn) error {
-		idx := b.egressIfIndex() // recomputed per dial; 0 => skip pin
-		if wsIsLoopback(address) {
-			idx = 0 // loopback never leaves the host; pinning it would break the dial
-		}
-		v6 := wsIsIPv6(address)
-		var serr error
-		cerr := c.Control(func(fd uintptr) {
-			if idx > 0 {
-				if v6 {
-					serr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, idx)
-				} else {
-					serr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, idx)
-				}
-			}
-			if serr == nil && b.cfg.protect != nil {
-				b.cfg.protect(int(fd))
-			}
-		})
-		if cerr != nil {
-			return cerr
-		}
-		return serr
+		return c.Control(func(fd uintptr) { b.cfg.protect(int(fd)) })
 	}
 }

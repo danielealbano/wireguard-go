@@ -67,12 +67,14 @@ func genConfigs(tb testing.TB) (cfgs, endpointCfgs [2]string) {
 		"listen_port", "0",
 		"replace_peers", "true",
 		"public_key", hex.EncodeToString(pub2[:]),
+		"transport", "udp",
 		"protocol_version", "1",
 		"replace_allowed_ips", "true",
 		"allowed_ip", "1.0.0.2/32",
 	)
 	endpointCfgs[0] = uapiCfg(
 		"public_key", hex.EncodeToString(pub2[:]),
+		"transport", "udp",
 		"endpoint", "127.0.0.1:%d",
 	)
 	cfgs[1] = uapiCfg(
@@ -80,12 +82,14 @@ func genConfigs(tb testing.TB) (cfgs, endpointCfgs [2]string) {
 		"listen_port", "0",
 		"replace_peers", "true",
 		"public_key", hex.EncodeToString(pub1[:]),
+		"transport", "udp",
 		"protocol_version", "1",
 		"replace_allowed_ips", "true",
 		"allowed_ip", "1.0.0.1/32",
 	)
 	endpointCfgs[1] = uapiCfg(
 		"public_key", hex.EncodeToString(pub1[:]),
+		"transport", "udp",
 		"endpoint", "127.0.0.1:%d",
 	)
 	return

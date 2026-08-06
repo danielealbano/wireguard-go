@@ -51,12 +51,12 @@ func newUDPDevicePair(t *testing.T) (a, b *tuntest.ChannelTUN) {
 	// Letting the ping (wsAssertPing) drive a single one-directional initiation avoids
 	// the glare entirely, so the handshake completes on the first exchange.
 	if err := da.IpcSet(fmt.Sprintf(
-		"public_key=%s\nendpoint=127.0.0.1:%d\nallowed_ip=1.0.0.2/32\n",
+		"public_key=%s\ntransport=udp\nendpoint=127.0.0.1:%d\nallowed_ip=1.0.0.2/32\n",
 		pub2, portB)); err != nil {
 		t.Fatalf("peer A: %v", err)
 	}
 	if err := db.IpcSet(fmt.Sprintf(
-		"public_key=%s\nendpoint=127.0.0.1:%d\nallowed_ip=1.0.0.1/32\n",
+		"public_key=%s\ntransport=udp\nendpoint=127.0.0.1:%d\nallowed_ip=1.0.0.1/32\n",
 		pub1, portA)); err != nil {
 		t.Fatalf("peer B: %v", err)
 	}

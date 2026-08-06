@@ -47,16 +47,26 @@ var byteBufferPool = &sync.Pool{
 	New: func() any { return new(bytes.Buffer) },
 }
 
-// wsListenReporter and wsEndpointConfig let IpcGetOperation round-trip the WebSocket
-// transport's additive keys without pulling transport specifics into the device core:
-// only the WebSocket bind and its client endpoints implement them, so get=1 output for
-// the UDP transport is byte-for-byte unchanged.
+// These reporter interfaces let IpcGetOperation round-trip the WebSocket transport's
+// additive keys without pulling transport specifics into the device core: only the
+// WebSocket bind and its dialing endpoints implement them, so get=1 output for a
+// plain UDP peer only gains the transport= line.
 type wsListenReporter interface {
 	WSListenURL() string
 }
 
-type wsEndpointConfig interface {
-	WSConfig() (mode, wstunnelTarget, bearer string, ok bool)
+// wsServerReporter is implemented by the bind so IpcGet can round-trip the
+// device-level WebSocket server/listener settings.
+type wsServerReporter interface {
+	WSServerTLSPaths() (cert, key string)
+	WSServerBearer() string
+	WSTrustedProxies() []netip.Prefix
+}
+
+// wsPeerReporter is implemented by a dialing *conn.WSEndpoint so IpcGet can
+// round-trip the per-peer WebSocket keys.
+type wsPeerReporter interface {
+	WSPeerKVs() []string
 }
 
 // IpcGetOperation implements the WireGuard configuration protocol "get" operation.
@@ -116,6 +126,25 @@ func (device *Device) IpcGetOperation(w io.Writer) error {
 			}
 		}
 
+		if r, ok := device.net.bind.(wsServerReporter); ok {
+			if cert, key := r.WSServerTLSPaths(); cert != "" && key != "" {
+				sendf("ws_server_tls_cert=%s", cert)
+				sendf("ws_server_tls_key=%s", key)
+			}
+			if bearer := r.WSServerBearer(); bearer != "" {
+				sendf("ws_server_bearer=%s", bearer) // value emitted (like a key), never logged
+			}
+			if tp := r.WSTrustedProxies(); len(tp) > 0 {
+				parts := make([]string, len(tp))
+				for i, p := range tp {
+					parts[i] = p.String()
+				}
+				// One comma-separated line, symmetric with set (parseCIDRList) so a
+				// get→set round-trip preserves every proxy, not just the last.
+				sendf("ws_trusted_proxies=%s", strings.Join(parts, ","))
+			}
+		}
+
 		for _, peer := range device.peers.keyMap {
 			// Serialize peer state.
 			peer.handshake.mutex.RLock()
@@ -123,18 +152,17 @@ func (device *Device) IpcGetOperation(w io.Writer) error {
 			keyf("preshared_key", (*[32]byte)(&peer.handshake.presharedKey))
 			peer.handshake.mutex.RUnlock()
 			sendf("protocol_version=1")
+			transport := peer.transport
+			if transport == "" {
+				transport = peerTransportUDP
+			}
+			sendf("transport=%s", transport)
 			peer.endpoint.Lock()
 			if peer.endpoint.val != nil {
 				sendf("endpoint=%s", peer.endpoint.val.DstToString())
-				if wc, ok := peer.endpoint.val.(wsEndpointConfig); ok {
-					if mode, wstunnelTarget, bearer, ok := wc.WSConfig(); ok {
-						sendf("ws_mode=%s", mode)
-						if wstunnelTarget != "" {
-							sendf("wstunnel_target=%s", wstunnelTarget)
-						}
-						if bearer != "" {
-							sendf("ws_bearer=%s", bearer)
-						}
+				if wc, ok := peer.endpoint.val.(wsPeerReporter); ok {
+					for _, kv := range wc.WSPeerKVs() {
+						sendf("%s", kv)
 					}
 				}
 			}
@@ -279,6 +307,53 @@ func (device *Device) handleDeviceLine(key, value string) error {
 			return ipcErrorf(ipc.IpcErrorPortInUse, "failed to set ws_listen: %w", err)
 		}
 
+	case "ws_server_tls_cert":
+		binder, err := device.wsBinder()
+		if err != nil {
+			return err
+		}
+		binder.SetServerCertPath(value)
+		if err := device.BindUpdate(); err != nil {
+			return ipcErrorf(ipc.IpcErrorPortInUse, "failed to set ws_server_tls_cert: %w", err)
+		}
+
+	case "ws_server_tls_key":
+		binder, err := device.wsBinder()
+		if err != nil {
+			return err
+		}
+		binder.SetServerKeyPath(value)
+		if err := device.BindUpdate(); err != nil {
+			return ipcErrorf(ipc.IpcErrorPortInUse, "failed to set ws_server_tls_key: %w", err)
+		}
+
+	case "ws_server_bearer":
+		binder, err := device.wsBinder()
+		if err != nil {
+			return err
+		}
+		device.log.Verbosef("UAPI: Updating websocket server bearer") // key name only, never the value
+		binder.SetServerBearer(value)
+		// BindUpdate so a running listener (opened by an earlier ws_listen line in the
+		// same setconf) reopens with the complete server config, regardless of key order.
+		if err := device.BindUpdate(); err != nil {
+			return ipcErrorf(ipc.IpcErrorPortInUse, "failed to set ws_server_bearer: %w", err)
+		}
+
+	case "ws_trusted_proxies":
+		binder, err := device.wsBinder()
+		if err != nil {
+			return err
+		}
+		prefixes, err := parseCIDRList(value)
+		if err != nil {
+			return ipcErrorf(ipc.IpcErrorInvalid, "invalid ws_trusted_proxies: %w", err)
+		}
+		binder.SetTrustedProxies(prefixes)
+		if err := device.BindUpdate(); err != nil {
+			return ipcErrorf(ipc.IpcErrorPortInUse, "failed to set ws_trusted_proxies: %w", err)
+		}
+
 	case "replace_peers":
 		if value != "true" {
 			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set replace_peers, invalid value: %v", value)
@@ -299,31 +374,95 @@ type ipcSetPeer struct {
 	dummy   bool // dummy reports whether this peer is a temporary, placeholder peer
 	created bool // new reports whether this is a newly created peer
 	pkaOn   bool // pkaOn reports whether the peer had the persistent keepalive turn on
-	// WebSocket peer keys, collected across lines and consumed in handlePostConfig.
-	// Reset per peer in handlePublicKeyLine so peer N never inherits peer N-1's values.
-	wsEndpointURL  string
-	wsMode         string
+	// Per-peer transport + endpoint + WebSocket keys, collected across lines and
+	// consumed in handlePostConfig. Reset per peer in handlePublicKeyLine so peer N
+	// never inherits peer N-1's values. `transport`/`endpointStr` shadow the promoted
+	// Peer fields deliberately; use peer.Peer.transport / peer.endpoint for those.
+	transport      string
+	transportSeen  bool
+	endpointStr    string
+	endpointSeen   bool
+	wsURL          string
 	wstunnelTarget string
 	wsBearer       string
+	wsMask         bool
+	wsTLSCA        string
+	wsTLSCert      string
+	wsTLSKey       string
+	wsTLSInsecure  bool
+	wsPingInterval time.Duration
+	wsBackoffMin   time.Duration
+	wsBackoffMax   time.Duration
+	wsSeen         map[string]bool // presence of each ws_* key (bool/duration zero values are ambiguous)
 }
 
 func (peer *ipcSetPeer) handlePostConfig() error {
 	if peer.Peer == nil || peer.dummy {
 		return nil
 	}
-	if peer.wsEndpointURL != "" {
-		binder, ok := peer.device.net.bind.(conn.WebSocketBinder)
-		if !ok {
-			return ipcErrorf(ipc.IpcErrorInvalid, "websocket endpoint requires the websocket transport")
-		}
-		endpoint, err := binder.ParseWSPeerEndpoint(peer.wsEndpointURL, peer.wsMode, peer.wstunnelTarget, peer.wsBearer)
+	// Effective transport: mandatory at creation; an incremental update may omit it
+	// and keeps the peer's persisted transport (matches UDP incremental updates).
+	if peer.transportSeen {
+		t, err := parsePeerTransport(peer.transport)
 		if err != nil {
-			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set websocket endpoint: %w", err)
+			return ipcErrorf(ipc.IpcErrorInvalid, "invalid transport: %w", err)
 		}
-		peer.endpoint.Lock()
-		peer.endpoint.val = endpoint
-		peer.endpoint.Unlock()
+		peer.Peer.transport = t
+	} else if peer.created {
+		return ipcErrorf(ipc.IpcErrorInvalid, "peer missing mandatory transport")
 	}
+
+	switch peer.Peer.transport {
+	case peerTransportUDP:
+		if peer.anyWSKeySeen() {
+			return ipcErrorf(ipc.IpcErrorInvalid, "ws_* keys are not allowed for transport=udp")
+		}
+		if peer.endpointSeen {
+			ep, err := peer.device.net.bind.ParseEndpoint(peer.endpointStr)
+			if err != nil {
+				return ipcErrorf(ipc.IpcErrorInvalid, "failed to set endpoint %v: %w", peer.endpointStr, err)
+			}
+			peer.setEndpoint(ep)
+		}
+	case peerTransportWebSocket, peerTransportWstunnel:
+		if peer.wsSeen["ws_url"] { // dialing peer
+			if !peer.endpointSeen {
+				return ipcErrorf(ipc.IpcErrorInvalid, "dialing websocket peer requires endpoint")
+			}
+			ap, err := netip.ParseAddrPort(peer.endpointStr)
+			if err != nil {
+				return ipcErrorf(ipc.IpcErrorInvalid, "invalid endpoint %q: %w", peer.endpointStr, err)
+			}
+			binder, ok := peer.device.net.bind.(conn.WebSocketBinder)
+			if !ok {
+				return ipcErrorf(ipc.IpcErrorInvalid, "websocket transport not available")
+			}
+			// Transport from the persisted enum (survives an incremental update that
+			// re-sends ws_url without transport=), not the raw ipcSetPeer.transport.
+			ep, err := binder.ParseWSPeerEndpoint(conn.WSPeerConfig{
+				Endpoint:       ap,
+				Transport:      string(peer.Peer.transport),
+				URL:            peer.wsURL,
+				WstunnelTarget: peer.wstunnelTarget,
+				Bearer:         peer.wsBearer,
+				Mask:           peer.wsMask,
+				TLSCAPath:      peer.wsTLSCA,
+				TLSCertPath:    peer.wsTLSCert,
+				TLSKeyPath:     peer.wsTLSKey,
+				TLSInsecure:    peer.wsTLSInsecure,
+				PingInterval:   peer.wsPingInterval,
+				BackoffMin:     peer.wsBackoffMin,
+				BackoffMax:     peer.wsBackoffMax,
+			})
+			if err != nil {
+				return ipcErrorf(ipc.IpcErrorInvalid, "failed to build websocket endpoint: %w", err)
+			}
+			peer.setEndpoint(ep)
+		} else if peer.wsSeen["wstunnel_target"] { // inbound peer must not carry a dial target
+			return ipcErrorf(ipc.IpcErrorInvalid, "wstunnel_target requires ws_url")
+		}
+	}
+
 	if peer.created {
 		peer.endpoint.disableRoaming = peer.device.net.brokenRoaming && peer.endpoint.val != nil
 	}
@@ -338,12 +477,26 @@ func (peer *ipcSetPeer) handlePostConfig() error {
 }
 
 func (device *Device) handlePublicKeyLine(peer *ipcSetPeer, value string) error {
-	// A new peer begins: clear the per-peer WebSocket keys so they never leak from
-	// the previous peer (ipcSetPeer is allocated once and reused for the whole op).
-	peer.wsEndpointURL = ""
-	peer.wsMode = ""
+	// A new peer begins: clear the per-peer transport/endpoint/WebSocket keys so they
+	// never leak from the previous peer (ipcSetPeer is allocated once and reused for
+	// the whole op). The persisted Peer.transport is NOT reset here — an incremental
+	// update of an existing peer keeps it.
+	peer.transport = ""
+	peer.transportSeen = false
+	peer.endpointStr = ""
+	peer.endpointSeen = false
+	peer.wsURL = ""
 	peer.wstunnelTarget = ""
 	peer.wsBearer = ""
+	peer.wsMask = false
+	peer.wsTLSCA = ""
+	peer.wsTLSCert = ""
+	peer.wsTLSKey = ""
+	peer.wsTLSInsecure = false
+	peer.wsPingInterval = 0
+	peer.wsBackoffMin = 0
+	peer.wsBackoffMax = 0
+	peer.wsSeen = nil
 
 	// Load/create the peer we are configuring.
 	var publicKey NoisePublicKey
@@ -410,31 +563,79 @@ func (device *Device) handlePeerLine(peer *ipcSetPeer, key, value string) error 
 			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set preshared key: %w", err)
 		}
 
+	case "transport":
+		switch value {
+		case "udp", "websocket", "wstunnel":
+			peer.transport = value
+			peer.transportSeen = true
+		default:
+			return ipcErrorf(ipc.IpcErrorInvalid, "invalid transport %q (want udp|websocket|wstunnel)", value)
+		}
+
 	case "endpoint":
 		device.log.Verbosef("%v - UAPI: Updating endpoint", peer.Peer)
-		if strings.HasPrefix(value, "ws://") || strings.HasPrefix(value, "wss://") {
-			// Defer: ws_mode/wstunnel_target/ws_bearer may follow; built in handlePostConfig.
-			peer.wsEndpointURL = value
-			return nil
-		}
-		endpoint, err := device.net.bind.ParseEndpoint(value)
-		if err != nil {
-			return ipcErrorf(ipc.IpcErrorInvalid, "failed to set endpoint %v: %w", value, err)
-		}
-		peer.endpoint.Lock()
-		defer peer.endpoint.Unlock()
-		peer.endpoint.val = endpoint
+		// Deferred: the endpoint TYPE depends on transport + ws_url, resolved in
+		// handlePostConfig, so key order is irrelevant.
+		peer.endpointStr = value
+		peer.endpointSeen = true
 
-	case "ws_mode":
-		peer.wsMode = value
+	case "ws_url":
+		peer.markWS(key)
+		peer.wsURL = value
 
 	case "wstunnel_target":
+		peer.markWS(key)
 		peer.wstunnelTarget = value
 
 	case "ws_bearer":
-		// Write-only secret: log the key name only, never the value.
+		peer.markWS(key)
+		// Secret: log the key name only, never the value.
 		device.log.Verbosef("%v - UAPI: Updating websocket bearer", peer.Peer)
 		peer.wsBearer = value
+
+	case "ws_mask":
+		peer.markWS(key)
+		peer.wsMask = value == "true"
+
+	case "ws_tls_ca":
+		peer.markWS(key)
+		peer.wsTLSCA = value
+
+	case "ws_tls_cert":
+		peer.markWS(key)
+		peer.wsTLSCert = value
+
+	case "ws_tls_key":
+		peer.markWS(key)
+		peer.wsTLSKey = value
+
+	case "ws_tls_insecure":
+		peer.markWS(key)
+		peer.wsTLSInsecure = value == "true"
+
+	case "ws_ping_interval":
+		peer.markWS(key)
+		d, err := parseMillis(value)
+		if err != nil {
+			return ipcErrorf(ipc.IpcErrorInvalid, "invalid ws_ping_interval: %w", err)
+		}
+		peer.wsPingInterval = d
+
+	case "ws_backoff_min":
+		peer.markWS(key)
+		d, err := parseMillis(value)
+		if err != nil {
+			return ipcErrorf(ipc.IpcErrorInvalid, "invalid ws_backoff_min: %w", err)
+		}
+		peer.wsBackoffMin = d
+
+	case "ws_backoff_max":
+		peer.markWS(key)
+		d, err := parseMillis(value)
+		if err != nil {
+			return ipcErrorf(ipc.IpcErrorInvalid, "invalid ws_backoff_max: %w", err)
+		}
+		peer.wsBackoffMax = d
 
 	case "persistent_keepalive_interval":
 		device.log.Verbosef("%v - UAPI: Updating persistent keepalive interval", peer.Peer)
@@ -491,6 +692,79 @@ func (device *Device) handlePeerLine(peer *ipcSetPeer, key, value string) error 
 	}
 
 	return nil
+}
+
+// parsePeerTransport maps the UAPI transport value to the persisted enum. It is the
+// exact inverse of peerTransport's string values.
+func parsePeerTransport(s string) (peerTransport, error) {
+	switch s {
+	case "udp":
+		return peerTransportUDP, nil
+	case "websocket":
+		return peerTransportWebSocket, nil
+	case "wstunnel":
+		return peerTransportWstunnel, nil
+	default:
+		return "", fmt.Errorf("want udp|websocket|wstunnel, got %q", s)
+	}
+}
+
+// markWS records the presence of a ws_* key so handlePostConfig can reject any of
+// them under transport=udp (bool/duration zero values are ambiguous).
+func (peer *ipcSetPeer) markWS(key string) {
+	if peer.wsSeen == nil {
+		peer.wsSeen = make(map[string]bool)
+	}
+	peer.wsSeen[key] = true
+}
+
+func (peer *ipcSetPeer) anyWSKeySeen() bool { return len(peer.wsSeen) > 0 }
+
+// setEndpoint installs the resolved endpoint on the peer under its lock.
+func (peer *ipcSetPeer) setEndpoint(ep conn.Endpoint) {
+	peer.endpoint.Lock()
+	peer.endpoint.val = ep
+	peer.endpoint.Unlock()
+}
+
+// wsBinder returns the WebSocket binder, or an error if the bind is not
+// WebSocket-capable.
+func (device *Device) wsBinder() (conn.WebSocketBinder, error) {
+	b, ok := device.net.bind.(conn.WebSocketBinder)
+	if !ok {
+		return nil, ipcErrorf(ipc.IpcErrorInvalid, "requires the websocket transport")
+	}
+	return b, nil
+}
+
+// parseMillis parses a non-negative integer number of milliseconds into a Duration.
+func parseMillis(value string) (time.Duration, error) {
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("must be >= 0")
+	}
+	return time.Duration(n) * time.Millisecond, nil
+}
+
+// parseCIDRList parses a comma-separated list of CIDR prefixes.
+func parseCIDRList(value string) ([]netip.Prefix, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parts := strings.Split(value, ",")
+	prefixes := make([]netip.Prefix, 0, len(parts))
+	for _, p := range parts {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(p))
+		if err != nil {
+			return nil, err
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes, nil
 }
 
 func (device *Device) IpcGet() (string, error) {

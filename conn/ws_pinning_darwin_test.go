@@ -8,55 +8,37 @@
 package conn
 
 import (
-	"sync"
+	"sync/atomic"
 	"testing"
 )
 
-// fakeRawConn is a syscall.RawConn stand-in whose Control invokes the callback with
-// a dummy fd, so the dialControl hook can be exercised without a real socket.
-type fakeRawConn struct{ mu sync.Mutex }
+// fakeRawConn is a syscall.RawConn whose Control invokes f with an arbitrary fd.
+// darwin dialControl only calls the protect callback (no marking/pinning), so no
+// real socket option is set.
+type fakeRawConn struct{}
 
-func (c *fakeRawConn) Control(f func(uintptr)) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	f(0)
-	return nil
-}
-func (c *fakeRawConn) Read(func(uintptr) bool) error  { return nil }
-func (c *fakeRawConn) Write(func(uintptr) bool) error { return nil }
-
-func TestWSPinning_RecomputesOnRedial(t *testing.T) {
-	var calls int
-	egressIfIndexFn = func() int { calls++; return 0 } // 0 => skip the IP_BOUND_IF syscall
-	t.Cleanup(func() { egressIfIndexFn = nil })
-
-	b := &WebSocketBind{}
-	ctrl := b.dialControl()
-	if ctrl == nil {
-		t.Fatal("dialControl returned nil")
-	}
-	for i := 0; i < 2; i++ {
-		if err := ctrl("tcp4", "203.0.113.1:443", &fakeRawConn{}); err != nil {
-			t.Fatalf("dial %d control: %v", i, err)
-		}
-	}
-	if calls != 2 {
-		t.Errorf("egress interface detection ran %d times, want 2 (recomputed per dial)", calls)
-	}
-}
+func (fakeRawConn) Control(f func(uintptr)) error  { f(3); return nil }
+func (fakeRawConn) Read(func(uintptr) bool) error  { return nil }
+func (fakeRawConn) Write(func(uintptr) bool) error { return nil }
 
 func TestWSPinning_ProtectInvoked(t *testing.T) {
-	egressIfIndexFn = func() int { return 0 }
-	t.Cleanup(func() { egressIfIndexFn = nil })
-
-	var protects int
-	b := &WebSocketBind{}
-	b.cfg.protect = func(fd int) { protects++ }
-	ctrl := b.dialControl()
-	if err := ctrl("tcp4", "203.0.113.1:443", &fakeRawConn{}); err != nil {
-		t.Fatalf("control: %v", err)
+	var calls atomic.Int64
+	b := &WebSocketBind{cfg: wsConfig{protect: func(int) { calls.Add(1) }}}
+	dc := b.dialControl()
+	if dc == nil {
+		t.Fatal("dialControl nil with protect set")
 	}
-	if protects != 1 {
-		t.Errorf("protect callback invoked %d times, want 1 per dial", protects)
+	if err := dc("tcp", "1.2.3.4:443", fakeRawConn{}); err != nil {
+		t.Fatalf("dialControl: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("protect called %d times, want 1", calls.Load())
+	}
+}
+
+func TestWSPinning_NoProtect_NoControl(t *testing.T) {
+	b := &WebSocketBind{}
+	if b.dialControl() != nil {
+		t.Error("darwin dialControl should be nil when protect is unset (no pinning)")
 	}
 }

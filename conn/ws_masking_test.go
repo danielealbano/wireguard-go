@@ -7,6 +7,7 @@ package conn_test
 
 import (
 	"bytes"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -55,31 +56,32 @@ func recvData(t *testing.T, fn conn.ReceiveFunc, timeout time.Duration) []byte {
 	}
 }
 
-func assertClientMask(t *testing.T, wantMasked bool, opts ...conn.WSOption) {
+func assertClientMask(t *testing.T, mask bool) {
 	t.Helper()
 	url, masked := newWSMaskProbe(t)
-	all := append([]conn.WSOption{conn.WithWSRole(conn.WSRoleClient)}, opts...)
-	b, err := conn.NewWebSocketBind(all...)
-	if err != nil {
-		t.Fatalf("bind: %v", err)
-	}
+	b := newClientBind(t)
 	fns, _, err := b.Open(0)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = b.Close() })
 	go drainReceiver(fns[0])
-	ep, err := b.ParseEndpoint(url)
+	ep, err := b.ParseWSPeerEndpoint(conn.WSPeerConfig{
+		Endpoint:  netip.MustParseAddrPort(wsURLHost(t, url)),
+		Transport: "websocket",
+		URL:       url,
+		Mask:      mask,
+	})
 	if err != nil {
-		t.Fatalf("ParseEndpoint: %v", err)
+		t.Fatalf("ParseWSPeerEndpoint: %v", err)
 	}
 	if err := b.Send([][]byte{{1, 2, 3}}, ep); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	select {
 	case got := <-masked:
-		if got != wantMasked {
-			t.Errorf("client frame masked=%v, want %v", got, wantMasked)
+		if got != mask {
+			t.Errorf("client frame masked=%v, want %v", got, mask)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("mask probe received no binary frame")
@@ -88,10 +90,10 @@ func assertClientMask(t *testing.T, wantMasked bool, opts ...conn.WSOption) {
 
 func TestWSClient_UnmaskedByDefault(t *testing.T) { assertClientMask(t, false) }
 
-func TestWSClient_MaskedOptIn(t *testing.T) { assertClientMask(t, true, conn.WithWSMask(true)) }
+func TestWSClient_MaskedOptIn(t *testing.T) { assertClientMask(t, true) }
 
 func TestWSServer_AcceptsUnmaskedClient(t *testing.T) {
-	_, fn, url := openServerBind(t)
+	_, fn, url := openServerBind(t, "")
 	c := rawDial(t, url, "", false)
 	if err := c.writeBinary([]byte("hello-unmasked")); err != nil {
 		t.Fatalf("write: %v", err)
@@ -102,7 +104,7 @@ func TestWSServer_AcceptsUnmaskedClient(t *testing.T) {
 }
 
 func TestWSServer_AcceptsMaskedClient(t *testing.T) {
-	_, fn, url := openServerBind(t)
+	_, fn, url := openServerBind(t, "")
 	c := rawDial(t, url, "", true)
 	if err := c.writeBinary([]byte("hello-masked")); err != nil {
 		t.Fatalf("write: %v", err)
@@ -113,7 +115,7 @@ func TestWSServer_AcceptsMaskedClient(t *testing.T) {
 }
 
 func TestWSReadMessage_OversizeRejected(t *testing.T) {
-	_, fn, url := openServerBind(t)
+	_, fn, url := openServerBind(t, "")
 	c := rawDial(t, url, "", false)
 	oversize := make([]byte, (1<<16)+1) // exceeds the wsReadLimit (1<<16) protocol guard
 	if err := c.writeBinary(oversize); err != nil {
@@ -125,7 +127,7 @@ func TestWSReadMessage_OversizeRejected(t *testing.T) {
 }
 
 func TestWSReadMessage_FragmentAndControl(t *testing.T) {
-	_, fn, url := openServerBind(t)
+	_, fn, url := openServerBind(t, "")
 	c := rawDial(t, url, "", false)
 	mustWrite := func(op ws.OpCode, fin bool, p string) {
 		if err := ws.WriteFrame(c.conn, ws.NewFrame(op, fin, []byte(p))); err != nil {
@@ -149,23 +151,14 @@ func TestWSReadMessage_FragmentAndControl(t *testing.T) {
 
 func TestWSClient_PingPongBackstop(t *testing.T) {
 	bridge := newWSBridge(t, false, true) // echo mode answers pings with pongs
-	b, err := conn.NewWebSocketBind(
-		conn.WithWSRole(conn.WSRoleClient),
-		conn.WithWSPingInterval(100*time.Millisecond),
-	)
-	if err != nil {
-		t.Fatalf("bind: %v", err)
-	}
+	b := newClientBind(t)
 	fns, _, err := b.Open(0)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = b.Close() })
 	go drainReceiver(fns[0])
-	ep, err := b.ParseEndpoint(bridge.url())
-	if err != nil {
-		t.Fatalf("ParseEndpoint: %v", err)
-	}
+	ep := wsClientEndpoint(t, b, bridge.url(), 100*time.Millisecond)
 	if err := b.Send([][]byte{{1}}, ep); err != nil { // opens the conn + starts pingLoop
 		t.Fatalf("Send: %v", err)
 	}

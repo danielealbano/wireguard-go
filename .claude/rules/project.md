@@ -45,7 +45,7 @@ pinned deps). Re-verify against `proxy.golang.org` before bumping.
 | Networking | `golang.org/x/net` | IPv4/IPv6 headers, DNS message parsing. |
 | Syscalls | `golang.org/x/sys` | Per-OS socket / TUN / route control. |
 | Userspace stack | `gvisor.dev/gvisor` | `tun/netstack` in-process TCP/IP; foundation for embedding WireGuard in a process. |
-| WebSocket transport | `conn.Bind` over WebSocket (`github.com/gobwas/ws`) | Server + client mode; tunnels the WireGuard wire protocol over WebSocket instead of UDP. Unmasked-by-default client, opt-in `ws_mask`, accept-both server (wstunnel interop). |
+| WebSocket transport | multiplexing `conn.Bind` (UDP + WebSocket via `github.com/gobwas/ws`) | **Per-peer** transport (`transport=udp\|websocket\|wstunnel`); one device carries UDP and WS/wstunnel peers at once. Roleless (listens if `ws_listen` set, dials per-peer with `ws_url`; both at once). `endpoint=ip:port` for all; `ws_url` carries TLS/HTTP. Unmasked-by-default client, opt-in `ws_mask`, accept-both server (wstunnel interop). The socket-side fwmark cooperates with `wg-quick` full-tunnel. See `docs/WGQUICK_INTEGRATION.md`. |
 | Windows TUN | `golang.zx2c4.com/wintun` | Wintun bindings. |
 | Config protocol | in-repo UAPI (`ipc/` + `device/uapi.go`) | Cross-platform `wg(8)` protocol over a control socket / named pipe. NO config file. |
 | Logging | in-repo `device.Logger` | Leveled printf-style (`Verbose`/`Error`/`Silent`). |
@@ -70,8 +70,12 @@ pinned deps). Re-verify against `proxy.golang.org` before bumping.
 - **CROSS-PLATFORM BUILDS MUST NOT BREAK.** A change MUST compile for ALL supported GOOS targets
   (linux, darwin, windows, freebsd, openbsd) and the mobile variants. When editing build-tagged
   files, you MUST keep every platform's file consistent.
-- **UAPI IS A STABLE CONTRACT.** The `get=1`/`set=1` configuration protocol MUST stay compatible
-  with `wg(8)` and the WireGuard apps.
+- **UAPI IS A STABLE CONTRACT FOR THE FORK'S TOOLING.** The `get=1`/`set=1` configuration protocol
+  is a stable contract for THIS fork's modified `wireguard-tools`/`wireguard-android`; it is NO LONGER
+  required to be compatible with STOCK `wg(8)` (the transport is chosen per-peer via the mandatory
+  `transport=udp|websocket|wstunnel` key, and `endpoint=` is a plain `ip:port` with the WebSocket
+  layer carried by per-peer `ws_url`/`ws_*` keys). Wire-protocol interop with standard WireGuard
+  stays SACRED (above).
 - **NO EXTERNAL SERVICES.** There is NO database, broker, or third-party API. All I/O is the TUN
   device, UDP sockets, and the local UAPI control socket.
 - **NO SECRETS IN LOGS.** Private keys, preshared keys, and key material MUST NEVER appear in logs

@@ -28,11 +28,11 @@ func wsUpgradeRequest(e *WSEndpoint) (dialURL string, header http.Header, subpro
 		if e.bearer != "" {
 			header.Set("Authorization", "Bearer "+e.bearer)
 		}
-		return e.url, header, nil, nil
+		return e.wsURL, header, nil, nil
 	case wsDialectWstunnel:
-		u, perr := url.Parse(e.url)
+		u, perr := url.Parse(e.wsURL)
 		if perr != nil {
-			return "", nil, nil, fmt.Errorf("wstunnel endpoint %q: %w", e.url, perr)
+			return "", nil, nil, fmt.Errorf("wstunnel endpoint %q: %w", e.wsURL, perr)
 		}
 		prefix := strings.Trim(u.Path, "/")
 		if prefix == "" {

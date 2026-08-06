@@ -222,15 +222,9 @@ func main() {
 		return
 	}
 
-	transport := os.Getenv("WG_TRANSPORT")
-	wsOpts, err := buildWSOptionsFromEnv(logger)
+	bind, err := newDaemonBind(logger)
 	if err != nil {
-		logger.Errorf("Invalid websocket configuration: %v", err)
-		os.Exit(ExitSetupFailed)
-	}
-	bind, err := conn.NewBindForTransport(transport, wsOpts...)
-	if err != nil {
-		logger.Errorf("Invalid WG_TRANSPORT: %v", err)
+		logger.Errorf("Failed to create transport bind: %v", err)
 		os.Exit(ExitSetupFailed)
 	}
 
@@ -241,14 +235,16 @@ func main() {
 	errs := make(chan error)
 	term := make(chan os.Signal, 1)
 
-	// Standalone network-switch detection: drive BindUpdate from OS path changes
-	// (WebSocket transport only; embedded apps drive BindUpdate themselves).
-	var pathMonitor conn.WSPathMonitor
-	if transport == "ws" {
-		pathMonitor = conn.NewWSPathMonitor(conn.Logger{Verbosef: logger.Verbosef, Errorf: logger.Errorf})
-		if err := pathMonitor.Start(func() { _ = device.BindUpdate() }); err != nil {
-			logger.Errorf("Failed to start path monitor: %v", err)
+	// Standalone network-switch detection: drive BindUpdate from OS path changes,
+	// but ONLY when the WebSocket transport is actually in use — a pure-UDP bind is
+	// never perturbed by a network change (embedded apps drive BindUpdate themselves).
+	pathMonitor := conn.NewWSPathMonitor(conn.Logger{Verbosef: logger.Verbosef, Errorf: logger.Errorf})
+	if err := pathMonitor.Start(func() {
+		if wb, ok := bind.(interface{ WSInUse() bool }); ok && wb.WSInUse() {
+			_ = device.BindUpdate()
 		}
+	}); err != nil {
+		logger.Errorf("Failed to start path monitor: %v", err)
 	}
 
 	// Optional Prometheus metrics listener (off unless WG_METRICS_LISTEN is set).

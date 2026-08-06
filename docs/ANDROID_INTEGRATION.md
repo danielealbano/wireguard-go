@@ -69,15 +69,16 @@ Key facts:
    connections are **dialed, dropped, and re-dialed** (every network switch = a new socket). The
    one-shot `wgGetSocketV4/V6` model cannot protect sockets that come and go. Each WS socket must be
    `VpnService.protect()`-ed **at dial time**, so the Go bind must **call back into Java per dial**.
-   This is the Android delivery of the same egress-loop prevention that `IP_BOUND_IF`/`SO_MARK`
-   provide on desktop (`docs/WORK_PLAN.md` D11) — but on an unprivileged app, `protect()` is the only
-   sanctioned mechanism, hence a callback rather than `SO_MARK`.
+   This is the Android delivery of the same egress-loop prevention that the socket `fwmark` (`SO_MARK`)
+   provides on Linux/BSD and `wg-quick` routing provides on darwin — but on an unprivileged app,
+   `protect()` is the only sanctioned mechanism, hence a callback rather than `SO_MARK`.
 
-2. **All WS config must travel in the UAPI settings string.** Because Android passes only the
-   `toWgUserspaceString()` blob and no flags/env, the transport selection, `ws_mode`, `wstunnel_target`,
-   `ws_bearer`, and any TLS options must be expressible as **UAPI keys** (the "embedder-supplied on
-   mobile" branch of `docs/WORK_PLAN.md` D17) or as new `wgTurnOn` parameters. On desktop these live
-   at process level; on Android they cannot.
+2. **All WS config travels in the UAPI settings string.** Because Android passes only the
+   `toWgUserspaceString()` blob and no flags/env, the per-peer `transport`, `endpoint` (`ip:port`),
+   `ws_url`, `wstunnel_target`, `ws_bearer`, `ws_mask`, per-peer TLS paths, and the device-level
+   `ws_listen`/`ws_server_*` keys are all expressed as **UAPI keys** (`docs/CONFIGURATION.md`). Since
+   the transport is now per-peer and env-free, this is the ONLY channel — nothing lives at process
+   level anymore.
 
 ---
 
@@ -89,28 +90,32 @@ Everything in this layer already exists in-repo; the symbols below are the contr
 
 - **WS bind constructible programmatically.** Android never runs `main.go`; it calls
   `device.NewDevice(tun, bind, logger)` directly. The WS bind is built the same way via
-  `conn.NewWebSocketBind(opts ...conn.WSOption)`.
+  `conn.NewMultiplexBind(opts ...conn.WSOption)` (UDP + WebSocket in one bind; per-peer transport), or `conn.NewWebSocketBind` for a WS-only bind.
 - **Per-dial protect hook — the one cross-language contract.** The WS client bind accepts a protect
   callback via the `conn.WithWSProtect(func(fd int))` option
   ([conn/ws_config.go](../conn/ws_config.go)) and invokes it inside `net.Dialer.Control` for **every**
-  dialed socket, before use (the per-OS `conn/ws_pinning_{linux,darwin,default}.go`). This is the sole
+  dialed socket, before use (the per-OS `conn/ws_pinning_{mark_unix,darwin,default}.go`). This is the sole
   new cross-language contract Android needs.
-- **WS config via UAPI.** The additive keys (`ws_listen`, URL `endpoint`, `ws_mode`, `wstunnel_target`,
+- **WS config via UAPI.** The per-peer keys (`transport`, `endpoint=ip:port`, `ws_url`, `wstunnel_target`,
   `ws_bearer`) parse from the settings string in [device/uapi.go](../device/uapi.go), the only channel
   Android has.
 - **The WS bind does not implement `conn.PeekLookAtSocketFd`.** With no single persistent socket,
   `wgGetSocketV4/V6` simply return `-1` (harmless); protection goes through the per-dial hook.
-- **URL endpoints, resolved at dial time** ([conn/ws_dial.go](../conn/ws_dial.go)) — not pre-resolved
-  to an IP.
+- **Pre-resolved `endpoint=ip:port`, dialed directly** ([conn/ws_dial.go](../conn/ws_dial.go)) — the
+  socket connects to the resolved `endpoint` ip:port; the per-peer `ws_url` supplies only the TLS SNI,
+  the HTTP `Host`, and the upgrade path. DNS resolution happens in the tooling before the config is
+  built (like UDP), NOT in the bind.
 - **Network-switch bump: nothing new needed in this repo.** `device.BindUpdate()` is exported
   ([device/device.go](../device/device.go)) and the WS bind's `Close`/`Open` implement full
-  teardown/re-arm, so a bump = reconnect + re-pin + DNS re-resolve. On the standalone daemon the bump
+  teardown/re-arm, so a bump = reconnect + re-pin to the pre-resolved endpoint. On the standalone daemon the bump
   is driven by the in-repo OS path monitor `conn.WSPathMonitor` / `conn.NewWSPathMonitor`
   ([conn/ws_pathmonitor.go](../conn/ws_pathmonitor.go); linux netlink, darwin `NWPathMonitor`) — the
   desktop counterpart the Android app reimplements with `ConnectivityManager`. In-process netlink is
   NOT an option on Android: apps targeting API 30+ cannot use an unprivileged `NETLINK_ROUTE` route
   dump, so the network-change signal must come from the app.
-- **TLS: system roots only** — no TLS material crosses UAPI.
+- **TLS: system roots by default; CA/mTLS optional over UAPI.** A mobile client typically needs only
+  system roots + SNI (from `ws_url`), but CA and mutual-TLS material may be supplied via the per-peer
+  `ws_tls_ca` / `ws_tls_cert` / `ws_tls_key` UAPI keys (loaded in [conn/ws_dialcfg.go](../conn/ws_dialcfg.go)).
 
 ### Layer B — libwg-go (`../wireguard-android/tunnel/tools/libwg-go`; user's fork)
 
@@ -129,12 +134,15 @@ Everything in this layer already exists in-repo; the symbols below are the contr
 
 ### Layer C — app (`../wireguard-android`, Java; user's fork)
 
-- **`InetEndpoint.parse`** — accept `ws(s)://host:port/path` URLs (the user has already committed to
-  this).
 - **Config model** — `Config`/`Peer`/`Interface` and `toWgUserspaceString()` must carry and emit the
-  WS keys so they reach `wgTurnOn`'s settings (`GoBackend.java:294`).
-- **Do not pre-resolve WS endpoints.** Bypass the `InetEndpoint` DNS pre-resolution
-  (`GoBackend.java:278`) for WS URLs — DNS is resolved in the bind at dial time (needed for reconnect).
+  per-peer WS keys (`transport`, `endpoint=ip:port`, `ws_url`, and the `ws_*` keys) so they reach
+  `wgTurnOn`'s settings (`GoBackend.java:294`). The transport is the per-peer `transport=` key, and the
+  `ws_url` (carrying `host:port/path`) is a SEPARATE key from the routable `endpoint`.
+- **Resolve the endpoint to `ip:port` up front (like UDP).** The bind dials the fixed `endpoint` and
+  uses `ws_url` only for TLS SNI / HTTP Host / upgrade path, so the app resolves the `ws_url` host to an
+  `endpoint=ip:port` before building the config (reuse the existing `InetEndpoint` DNS pre-resolution,
+  `GoBackend.java:278`) and re-pushes a fresh config when the server address changes — the bind never
+  re-resolves DNS itself.
 - **Register the protect callback** (JNI) and drop reliance on the one-shot
   `service.protect(wgGetSocketV4/V6(...))` (`GoBackend.java:349-350`) for WS tunnels — those now
   return `-1`. Keep them for the UDP path.
@@ -167,10 +175,10 @@ of pull (Java→Go, once).
 
 | WORK_PLAN placement (desktop) | On Android |
 |---|---|
-| `WG_TRANSPORT` (env/flag) | UAPI device key in the settings string, or a `wgTurnOn` param |
+|  per-peer `transport` UAPI key in the settings string| UAPI device key in the settings string, or a `wgTurnOn` param |
 | TLS material (files/flags) | UAPI keys / `wgTurnOn` params; a mobile **client** usually needs only system roots + `servername` |
 | `ws_ping_interval`, backoff (flags) | UAPI device keys (sane defaults if omitted) |
-| `ws_listen`, `endpoint` URL, `ws_mode`, `wstunnel_target`, `ws_bearer` (UAPI) | unchanged — already UAPI |
+| per-peer `transport`/`endpoint=ip:port`/`ws_url`/`ws_*`, device `ws_listen`/`ws_server_*` (UAPI) | unchanged — already UAPI |
 
 Everything funnels through `config.toWgUserspaceString()` → `wgTurnOn(settings)` → `IpcSet`.
 
@@ -181,6 +189,7 @@ Everything funnels through `config.toWgUserspaceString()` → `wgTurnOn(settings
 - **JNI signature/lifecycle for the `VpnService.protect` upcall** — OUT OF THIS REPO'S SCOPE: it is
   Layer B/C plumbing (the user's wireguard-android fork). This repo's entire contract is the Layer A
   per-dial `func(fd int)` protect option; nothing in this repo depends on how the upcall is built.
-- **Mobile client TLS** — RESOLVED: **system roots suffice** for the target deployment; no TLS config
-  crosses the UAPI boundary (WORK_PLAN §4, TLS row, records the escalation paths if ever needed).
+- **Mobile client TLS** — RESOLVED: **system roots + SNI suffice** for the target deployment; when a
+  private CA or mutual TLS is required, the per-peer `ws_tls_ca` / `ws_tls_cert` / `ws_tls_key` UAPI keys
+  carry that material (loaded in [conn/ws_dialcfg.go](../conn/ws_dialcfg.go)).
 - Server role on Android is out of scope (the app is a client; `ws_listen` is unused there).

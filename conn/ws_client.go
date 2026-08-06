@@ -29,11 +29,16 @@ func (b *WebSocketBind) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	done := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	b.inbound, b.done, b.ctx, b.ctxCancel = inbound, done, ctx, cancel
-	if b.cfg.role == WSRoleServer {
-		return b.openServer(ctx, port, inbound, done)
-	}
+	// Roleless: always ready to dial out (per-peer ws_url) via the client maps, AND
+	// listen whenever ws_listen is configured — a device can be a WS server and a WS
+	// client at once (ws_listen ↔ listen_port, ws_url ↔ endpoint).
 	b.conns = make(map[string]*wsClientConn)
 	b.dialBackoff = make(map[string]wsBackoff)
+	if b.cfg.listenURL != "" {
+		if err := b.openServer(inbound, done); err != nil {
+			return nil, 0, err
+		}
+	}
 	return []ReceiveFunc{makeWSReceiveFunc(inbound, done)}, port, nil
 }
 
@@ -61,7 +66,10 @@ func (b *WebSocketBind) Send(bufs [][]byte, ep Endpoint) error {
 	if !ok {
 		return ErrWrongEndpointType
 	}
-	if b.cfg.role == WSRoleServer {
+	// Dispatch by endpoint kind: an inbound (accepted) endpoint carries a connID and
+	// no ws_url, and we reply over its accepted connection; a dialing endpoint carries
+	// a ws_url and we dial (once) to reach it.
+	if we.wsURL == "" && we.connID != 0 {
 		return b.serverSend(bufs, we)
 	}
 	c, err := b.clientConn(we)
@@ -83,8 +91,8 @@ func (b *WebSocketBind) Send(bufs [][]byte, ep Endpoint) error {
 func (b *WebSocketBind) readLoop(c *wsClientConn, inbound chan<- wsInbound, done <-chan struct{}) {
 	defer func() {
 		b.mu.Lock()
-		if b.conns[c.ep.url] == c {
-			delete(b.conns, c.ep.url)
+		if b.conns[c.ep.key()] == c {
+			delete(b.conns, c.ep.key())
 		}
 		b.mu.Unlock()
 		c.cancel()
