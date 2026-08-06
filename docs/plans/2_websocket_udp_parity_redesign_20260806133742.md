@@ -789,3 +789,11 @@ This overrides nothing in `development_pipeline.md` except to INSERT one explici
   parses milliseconds, so they round-trip.
 - **US8 / ARCHITECTURE.md Mermaid.** One node label in the existing WebSocket chart was updated
   (`egress pin` → `fwmark`); validated with `make mermaid-check` (exit 0).
+- **US1 / `conn/ws_mark_unix.go` — `markRawFd` mark==0 guard.** The plan's Task 1.1 `markRawFd` only
+  skipped when `fwmarkIoctl == 0` (darwin/windows), dropping the `if mark != 0` guard that the pre-existing
+  `conn/ws_pinning_linux.go` had. Because the kernel requires CAP_NET_ADMIN to set `SO_MARK` to ANY value
+  (including 0 — verified against `net/core/sock.c`), an unprivileged dialer with no fwmark (e.g. Android,
+  which uses `VpnService.protect`) would have hit EPERM on every dial, failing the dial AND skipping the
+  protect callback. Restored the guard: `markRawFd` is a no-op when `mark == 0`. `TestWSDialControl_*` were
+  updated to assert the corrected contract (protect always runs on an unmarked dial). Caught by
+  post-implementation review.

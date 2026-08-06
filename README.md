@@ -10,14 +10,18 @@ This is an implementation of WireGuard in Go.
 > useful where UDP is blocked or only HTTP(S) egress is available. It also adds an optional **Prometheus
 > metrics** endpoint and **multi-platform release packaging** (binaries + a container image).
 >
-> **The default behaviour is unchanged.** Without `WG_TRANSPORT=ws` this is the stock UDP wireguard-go; the
-> WireGuard wire protocol, handshake, and the `wg(8)` UAPI are untouched.
+> **The WireGuard wire protocol and handshake are untouched.** The transport is chosen **per peer** via the
+> UAPI `transport=udp|websocket|wstunnel` key; a peer with `transport=udp` behaves exactly like stock
+> wireguard-go. Every peer carries a routable `endpoint=ip:port`; a WebSocket peer adds a per-peer `ws_url`
+> (and the `ws_*` keys) for the TLS/HTTP layer. There are **no** `WG_TRANSPORT` / `WG_WS_*` environment
+> variables — all configuration travels over the UAPI.
 >
 > - **Configuration of the new settings → [docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
 > - Design & internals → [docs/PROJECT.md](docs/PROJECT.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 >
-> Note: stock `wg(8)` / `wg-quick(8)` do not yet understand the WebSocket settings (a `wss://` endpoint and
-> the `ws_*` keys), so today they are configured directly over the UAPI socket — see the configuration doc.
+> Note: the UAPI here is a **fork-tooling contract** — the mandatory per-peer `transport=` key and the
+> `ws_*` keys mean stock `wg(8)` / `wg-quick(8)` do not drive it directly; configure it over the UAPI socket
+> (see the configuration doc). The wire protocol stays interoperable with standard WireGuard.
 
 ## Usage
 
