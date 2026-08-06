@@ -759,10 +759,23 @@ This overrides nothing in `development_pipeline.md` except to INSERT one explici
 
 ## Deviations
 
-- **US6 / test-writing order.** Production code (US1–US7) was implemented first, then ALL tests were
+- **US6 / test-writing order.** Production code (US1–US7) was implemented first, then tests were
   migrated/written together, rather than strictly per-story. Why: US2–US5 repeatedly reshape the same
   `WSEndpoint`/`ParseWSPeerEndpoint`/UAPI surfaces, so tests written per-story would have been rewritten
-  several times. Quality gates still run once at the end (US9). No coverage was dropped.
+  several times. Quality gates still run once at the end (US9).
+- **Post-implementation review / added unit tests.** The Stage 4 review found several plan-named unit
+  tests had not been written in the first implementation pass. They were added and now exist:
+  `TestWebSocketBind_SetMark_RemarksLiveConns` and `TestWSDialControl_MarkAndProtectContract`
+  (`conn/ws_mark_internal_test.go`, Task 1.3); `TestBuildDialConfig_MTLS`/`_MTLSBadPath`
+  (`conn/ws_dialcfg_internal_test.go`, Task 2.2); `TestMultiplexBind_Send_DispatchByType`,
+  `TestMultiplexBind_SetMarkCloseFanout`, `TestWSBind_Send_DispatchByEndpointKind`
+  (`conn/ws_multiplex_internal_test.go`, Tasks 3.2/4.2); `TestMultiplexBind_ForwardsPeek`
+  (`conn/ws_multiplex_android_test.go`) and `TestMultiplexBind_ForwardsBindSocketToInterface`
+  (`conn/ws_multiplex_windows_test.go`, Task 4.2); `TestWSServer_AcceptMarksSocketBestEffort`
+  (`conn/ws_server_test.go`, Task 1.3); and `TestE2E_Wstunnel_FullTunnel` (`tests/e2e/e2e_test.go`,
+  Task 6.2). The real privileged SO_MARK application at dial/accept is additionally covered by the
+  netns full-tunnel e2e tests; the unit tests cover the iteration, the mark/protect contract, the
+  dispatch, and the mTLS material loading privilege-free.
 - **US2 / `conn/ws_endpoint.go` — `dstAddrPort`.** The plan distinguished client vs server endpoints by
   `wsURL != ""`, but a plain `ParseEndpoint(ip:port)` endpoint has a `dialTarget` and no `wsURL`, which
   reported a zero address. Changed to `dialTarget.IsValid()`. (Commit `f97f7da`.)
