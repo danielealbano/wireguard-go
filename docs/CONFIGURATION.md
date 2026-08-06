@@ -1,126 +1,116 @@
 # Configuration
 
-This document covers the configuration surface **added by this fork** — the WebSocket / wstunnel
-transport and the Prometheus metrics endpoint. Everything else (keys, peers, allowed IPs, the
-`wg(8)` UAPI, `ip`/`ifconfig`) is unchanged from upstream wireguard-go.
+This fork configures the transport **per peer**, entirely through the UAPI (`get=1`/`set=1`)
+control socket. There are **no `WG_WS_*` environment variables** and no config file — the modified
+`wireguard-tools`/`wireguard-android` emit the keys below. The wire protocol is unchanged: a
+WebSocket/wstunnel peer speaks the exact same WireGuard packets as a UDP peer, only the carrier
+differs, so a `wstunnel` peer can reach a stock UDP WireGuard server.
 
-The transport is selected **once at startup** by an environment variable; per-peer and per-listener
-details are then set over the normal UAPI (`get=1`/`set=1`) control socket.
+## 1. Per-peer transport (mandatory)
 
-> **`wg(8)` compatibility:** stock `wg` / `wg-quick` reject a `wss://` endpoint and do not know the
-> `ws_*` keys, so the WebSocket settings below are written **directly to the UAPI socket**
-> (`/var/run/wireguard/<iface>.sock`). Standard fields (`private_key`, `public_key`, `allowed_ip`,
-> `persistent_keepalive_interval`, …) are exactly as in `wg(8)`.
+Every peer declares a carrier with a **mandatory** `transport` key at creation:
 
----
+| `transport` | Carrier |
+|---|---|
+| `udp` | Plain UDP (stock WireGuard). |
+| `websocket` | WireGuard over a WebSocket (ws/wss). |
+| `wstunnel` | WireGuard over a [wstunnel](https://github.com/erebe/wstunnel) relay. |
 
-## 1. Transport selection
+Creating a peer without `transport=` is rejected. An incremental `set` that updates an existing peer
+may omit it and keeps the persisted value. `transport=` is round-tripped by `get=1`.
 
-| Variable | Values | Meaning |
-|---|---|---|
-| `WG_TRANSPORT` | `udp` (default) · `ws` | `udp` is the stock UDP transport. `ws` selects the WebSocket transport. |
-| `WG_WS_ROLE` | `client` (default) · `server` | WebSocket role when `WG_TRANSPORT=ws`. A **client** dials peer `endpoint` URLs; a **server** listens on `ws_listen`. |
+## 2. `endpoint` and `ws_url`
 
-## 2. Environment variables (WebSocket)
+`endpoint=` is a **plain, resolved `ip:port`** for every transport — the address packets go to — so
+`wg-quick` host-routes it and Linux `fwmark` marks the socket, exactly like UDP.
 
-All are read once at startup; secrets are never logged.
+For `websocket`/`wstunnel` peers the WebSocket/TLS/HTTP layer is carried by a separate per-peer
+`ws_url` (`ws(s)://host:port/path`): the scheme selects TLS, the host is the TLS SNI + HTTP `Host`
+header + cert name, and the path is the WS upgrade path. wireguard-go dials the exact `endpoint`
+`ip:port` using `ws_url` only for the TLS/HTTP layer, so there is no DNS-resolution race.
 
-| Variable | Applies to | Meaning |
-|---|---|---|
-| `WG_WS_MASK` | client | `1`/`true` ⇒ mask outgoing WebSocket frames. **Default off (unmasked)**, matching a default wstunnel server. When on, the peer **wstunnel server must run `--websocket-mask-frame`** (mask modes must match). |
-| `WG_WS_TLS_CERT` / `WG_WS_TLS_KEY` | server | PEM cert + key files for the `wss://` listener. |
-| `WG_WS_TLS_CA` | client | PEM CA file to trust the server certificate (empty ⇒ system roots). |
-| `WG_WS_TLS_SERVERNAME` | client | Override the TLS SNI / verified name. |
-| `WG_WS_TLS_INSECURE` | client | `1` ⇒ skip TLS verification (testing only). |
-| `WG_WS_BEARER` | server | Expected pre-shared bearer token; the server rejects upgrades whose `Authorization: Bearer` does not match (constant-time). Empty ⇒ gate off. A coarse gate on top of the Noise handshake. |
-| `WG_WS_PING_INTERVAL` | client | WebSocket keepalive/backstop interval (Go duration, e.g. `25s`). |
-| `WG_WS_TRUSTED_PROXIES` | server | Comma-separated CIDRs from which `X-Forwarded-For` is trusted (server behind an HTTP reverse proxy). |
+A `websocket`/`wstunnel` peer with **no `ws_url`** is an **inbound** peer: it does not dial; its
+endpoint is learned when it connects to this device's `ws_listen` (the `ws_url`↔`endpoint` analogy of
+a UDP peer with no `endpoint`).
 
-Stock env vars still apply: `LOG_LEVEL` (`debug`/`verbose`), `WG_TUN_NAME_FILE` (macOS/OpenBSD), and
-`WG_METRICS_LISTEN` (see §5).
+## 3. Per-peer UAPI keys (client / dialing side)
 
-## 3. UAPI keys (WebSocket)
-
-Additive keys accepted only when `WG_TRANSPORT=ws`. Every other unknown key is still rejected.
-
-**Device-level** (set once, like `private_key`):
-
-| Key | Role | Meaning |
-|---|---|---|
-| `ws_listen=<ws(s)://host:port/path>` | server | The listen URL for the WebSocket server. Setting it re-arms the listener (`BindUpdate`). |
-
-`ws_listen` is a **persistent device scalar, like `listen_port`**: a `set=1` that omits it (e.g. a
-full-replace `setconf`) leaves the current listener **unchanged** — it is not cleared by omission or by
-`replace_peers`. To stop the server explicitly, send `ws_listen=` with an **empty** value, which cleanly
-tears the listener down.
-
-**Peer-level** (follow a `public_key` line, like `endpoint`/`allowed_ip`):
+All are per-peer, optional (except as noted), and round-tripped by `get=1`:
 
 | Key | Meaning |
 |---|---|
-| `endpoint=<ws(s)://host:port[/path]>` | The peer's WebSocket URL (replaces the UDP `host:port` endpoint). |
-| `ws_mode=standard\|wstunnel` | `standard` = this fork's native dialect (talks to a wireguard-go WS **server**). `wstunnel` = interop with a [wstunnel](https://github.com/erebe/wstunnel) server. Default `standard`. |
-| `wstunnel_target=<host:port>` | **wstunnel mode only** — the real WireGuard UDP endpoint the wstunnel server must forward to (the JWT `r`/`rp`). Required when `ws_mode=wstunnel`. |
-| `ws_bearer=<token>` | Optional per-peer bearer: `standard` ⇒ `Authorization: Bearer <token>`; `wstunnel` ⇒ HTTP basic-auth (base64 `user:pass`). Never logged; echoed by `get=1` (like `preshared_key`) so bearer-authed peers survive a reload. |
+| `ws_url` | `ws(s)://host:port/path` — TLS scheme + SNI/Host + upgrade path. Required to dial. |
+| `wstunnel_target` | `host:port` of the inner WireGuard endpoint the wstunnel relay forwards to. Required for `transport=wstunnel` (dialing); rejected otherwise. |
+| `ws_bearer` | Bearer token sent to the server (`Authorization: Bearer …`). Echoed by `get=1`, NEVER logged. |
+| `ws_mask` | `true` to mask client frames (needs a wstunnel server run with `--websocket-mask-frame`). Default unmasked. |
+| `ws_tls_ca` | Path to a PEM CA bundle used to verify the server (wss). |
+| `ws_tls_cert` / `ws_tls_key` | Paths to a client cert/key for mutual TLS (wss). |
+| `ws_tls_insecure` | `true` to skip server-cert verification (wss). |
+| `ws_ping_interval` / `ws_backoff_min` / `ws_backoff_max` | Keepalive ping interval and reconnect backoff, in **milliseconds** (0 ⇒ defaults). |
 
-**Round-trip:** `get=1` emits `ws_listen` (device) and per-peer `ws_mode`/`wstunnel_target`/`ws_bearer`, so
-`wg showconf` / `wg-quick SaveConfig` / `syncconf` preserve them across a save/reload. `ws_bearer` is
-echoed over the trusted local UAPI socket (like `preshared_key`); it is never logged.
+`ws_*` keys are rejected for `transport=udp`.
 
-## 4. Examples
+## 4. Device-level UAPI keys (server / listener side)
 
-Configure by writing a `set=1` block to the UAPI socket, e.g. `printf 'set=1\n…\n\n' | nc -U /var/run/wireguard/wg0.sock`. Keys are **hex**, as the UAPI requires.
-
-**Native WebSocket — server** (`WG_TRANSPORT=ws WG_WS_ROLE=server WG_WS_TLS_CERT=… WG_WS_TLS_KEY=…`):
-
-```
-set=1
-private_key=<hex>
-ws_listen=wss://0.0.0.0:443/wg
-public_key=<peer-hex>
-allowed_ip=10.0.0.2/32
-```
-
-**Native WebSocket — client** (`WG_TRANSPORT=ws WG_WS_TLS_CA=/path/ca.pem`):
-
-```
-set=1
-private_key=<hex>
-public_key=<server-hex>
-endpoint=wss://vpn.example.com:443/wg
-allowed_ip=10.0.0.0/24
-persistent_keepalive_interval=25
-```
-
-**wstunnel interop — client** (`WG_TRANSPORT=ws`), dialing a wstunnel server that forwards to a normal
-UDP WireGuard endpoint. The default (empty) URL path targets wstunnel's default `/v1/events`:
-
-```
-set=1
-private_key=<hex>
-public_key=<server-hex>
-endpoint=wss://vpn.example.com:8443
-ws_mode=wstunnel
-wstunnel_target=127.0.0.1:51820
-allowed_ip=10.0.0.0/24
-persistent_keepalive_interval=25
-```
-
-## 5. Metrics (optional)
-
-| Variable | Meaning |
+| Key | Meaning |
 |---|---|
-| `WG_METRICS_LISTEN` | Address for a Prometheus `/metrics` HTTP listener (e.g. `127.0.0.1:9090`). Empty ⇒ metrics **off**. |
+| `ws_listen` | `ws(s)://host:port/path` the device listens on (the `listen_port` analogue). Persistent, like `listen_port`. |
+| `ws_server_tls_cert` / `ws_server_tls_key` | Paths to the server's TLS cert/key (wss listener). |
+| `ws_server_bearer` | Expected `Authorization: Bearer` value; empty ⇒ gate off. NEVER logged. |
+| `ws_trusted_proxies` | Comma-separated CIDRs whose `X-Forwarded-For` is trusted for the client's source address. |
 
-Exposes device/peer counters (handshakes, rx/tx, per-peer last-handshake) and, for the WebSocket
-transport, connection/reconnect/RTT gauges. No key material is ever exported.
+A device is a WS **server** whenever `ws_listen` is set and a WS **client** toward any peer with a
+`ws_url` — both at once. These require the WebSocket transport (present in the daemon by default).
 
-## 6. Notes
+## 5. Examples (UAPI `set=1` bodies)
 
-- **Masking:** the client is **unmasked by default** because a default wstunnel server does not unmask;
-  turn on `WG_WS_MASK` only when the peer wstunnel server runs `--websocket-mask-frame`. This fork's own
-  WebSocket **server accepts both** masked and unmasked client frames.
-- **Roaming:** on a network change the transport reconnects (re-resolving DNS, re-pinning egress);
-  the standalone daemon drives this from an OS path monitor, embedders via `device.BindUpdate()`.
-- **Wire protocol is unchanged:** WebSocket only replaces the outer transport; the Noise handshake and
-  WireGuard packet formats are identical, so a WS peer still authenticates with normal WireGuard keys.
+Plain UDP peer:
+
+```
+transport=udp
+endpoint=203.0.113.5:51820
+allowed_ip=10.10.0.0/24
+```
+
+Standard WebSocket (wss) client peer:
+
+```
+transport=websocket
+endpoint=203.0.113.5:8443
+ws_url=wss://vpn.example.com:8443/wg
+ws_tls_ca=/etc/wireguard/ca.pem
+allowed_ip=0.0.0.0/0
+```
+
+wstunnel client peer:
+
+```
+transport=wstunnel
+endpoint=203.0.113.5:8443
+ws_url=wss://vpn.example.com:8443/v1
+wstunnel_target=127.0.0.1:51820
+allowed_ip=0.0.0.0/0
+```
+
+Device acting as a WS server (device lines + one inbound peer):
+
+```
+ws_listen=wss://0.0.0.0:8443/wg
+ws_server_tls_cert=/etc/wireguard/server-cert.pem
+ws_server_tls_key=/etc/wireguard/server-key.pem
+public_key=<peer pubkey>
+transport=websocket
+allowed_ip=10.10.0.2/32
+```
+
+## 6. Metrics (optional)
+
+An operational Prometheus listener is still controlled by the `WG_METRICS_LISTEN` environment
+variable (host:port). This is the only remaining WebSocket-related environment variable.
+
+## 7. Notes
+
+- Full-tunnel (`AllowedIPs=0.0.0.0/0`) is `wg-quick`'s job — see `docs/WGQUICK_INTEGRATION.md`.
+- Secrets (`ws_bearer`, `ws_server_bearer`, key material) are round-tripped by `get=1` over the
+  trusted control socket but are NEVER written to logs.
+- TLS material is passed as file paths; the paths must be readable by the daemon.

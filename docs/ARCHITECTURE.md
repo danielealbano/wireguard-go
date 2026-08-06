@@ -285,20 +285,25 @@ these interfaces, **not** touching the `device` core.
 
 ## 9. WebSocket Transport (`conn/ws_*.go`)
 
-The WebSocket transport is an alternative `conn.Bind` (`conn.WebSocketBind`) that carries the
-*unchanged* WireGuard datagrams over `ws(s)://` instead of UDP — one datagram per WebSocket binary
-message. It is selected at startup with `WG_TRANSPORT=ws` and runs in one role per device
-(`WG_WS_ROLE=client|server`). The `device` core is untouched: the additive UAPI keys reach it only via
-the optional `conn.WebSocketBinder` interface it type-asserts, and network-switch roaming reuses the
-existing `device.BindUpdate()` (close + reopen the bind), driven on the standalone daemon by a per-OS
-path monitor (Linux netlink, macOS `NWPathMonitor` via cgo) and by the embedding app otherwise.
+The WebSocket transport carries the *unchanged* WireGuard datagrams over `ws(s)://` instead of UDP —
+one datagram per WebSocket binary message. The daemon runs a **multiplexing** `conn.Bind` that
+composes the platform UDP bind (`NewDefaultBind()`) with a `conn.WebSocketBind` and dispatches per
+peer by endpoint type, so **one device carries UDP and WebSocket/wstunnel peers at once**. Transport
+is chosen **per peer** by the mandatory `transport=` UAPI key (not by environment). The WebSocket bind
+is **roleless**: it listens whenever `ws_listen` is set and dials out to any peer carrying a `ws_url`,
+both at the same time (`ws_listen`↔`listen_port`, `ws_url`↔`endpoint`). The `device` core is untouched:
+the per-peer keys reach it only via the optional `conn.WebSocketBinder` interface it type-asserts, and
+network-switch roaming reuses `device.BindUpdate()`, driven on the standalone daemon by a per-OS path
+monitor (Linux netlink, macOS `NWPathMonitor` via cgo) — gated on `WSInUse()` so a pure-UDP bind is
+never perturbed — and by the embedding app otherwise. `endpoint=` is a plain `ip:port` for every
+transport; the WebSocket/TLS/HTTP layer is carried by the per-peer `ws_url`.
 
 ```mermaid
 flowchart LR
     subgraph ClientSide["WebSocket client"]
         CDEV["device.Device"]
         CBIND["WebSocketBind client"]
-        CDIAL["dial ws or wss upgrade\negress pin plus protect"]
+        CDIAL["dial endpoint ip:port\nfwmark on mark OSes, protect on android"]
     end
 
     subgraph ServerSide["WebSocket server"]
@@ -318,10 +323,12 @@ Key properties: a per-connection write mutex serialises concurrent senders; a ne
 queue plus a `done` channel and a joined `WaitGroup` give a race- and leak-free shutdown across
 `BindUpdate` cycles; the client reconnects with DNS re-resolution and bounded per-endpoint backoff,
 with WebSocket ping as a dead-connection backstop; the server rebinds a reconnecting peer via
-`SetEndpointFromPacket` and gates upgrades with a constant-time bearer check. Frame masking (built on
-`github.com/gobwas/ws`) is **unmasked by default** on the client — matching a default wstunnel server,
-which does not unmask — with an opt-in `ws_mask` (`WG_WS_MASK`) mirroring wstunnel's
-`--websocket-mask-frame`; the server **accepts both** masked and unmasked client frames and never masks
-its own. An optional Prometheus
+connection id and gates upgrades with a constant-time bearer check. All client connection settings are
+per-peer (carried on the `WSEndpoint`): per-peer TLS (CA/cert/key/insecure via file paths), mask,
+timings, and dialect. Frame masking (built on `github.com/gobwas/ws`) is **unmasked by default** on the
+client — matching a default wstunnel server, which does not unmask — with an opt-in per-peer `ws_mask`
+mirroring wstunnel's `--websocket-mask-frame`; the server **accepts both** masked and unmasked client
+frames and never masks its own. Full-tunnel stays off-tun via the socket fwmark (Linux/BSD; re-marked
+live in `SetMark`) and `wg-quick` routing (darwin) — see `docs/WGQUICK_INTEGRATION.md`. An optional Prometheus
 collector (in `metrics/`) reads device peer atomics and WebSocket-bind counters through daemon-supplied
 snapshots, so `metrics` imports neither `device` nor `conn`.

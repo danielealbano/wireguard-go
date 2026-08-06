@@ -105,15 +105,11 @@ users the in-kernel WireGuard is preferable.
 | `WG_UAPI_FD` | Use an already-open UAPI socket file descriptor. |
 | `WG_PROCESS_FOREGROUND` | Set to `1` by the daemonizing parent for its child; forces foreground. |
 | `WG_TUN_NAME_FILE` | On macOS/OpenBSD (kernel-chosen `utun`/`tun` names), the resolved interface name is written here. |
-| `WG_TRANSPORT` | `udp` (default) or `ws` — selects the outer transport (UDP or WebSocket) at startup. |
-| `WG_WS_ROLE` | `client` (default) or `server` — the WebSocket bind role. |
-| `WG_WS_TLS_CERT` / `WG_WS_TLS_KEY` | Server `wss` certificate + key files. |
-| `WG_WS_TLS_CA` / `WG_WS_TLS_SERVERNAME` / `WG_WS_TLS_INSECURE` | Client `wss` options (empty ⇒ system roots; `WG_WS_TLS_INSECURE=1` skips verification). |
-| `WG_WS_BEARER` | Server-side expected pre-shared bearer (coarse gate, constant-time checked before upgrade). Never logged. |
-| `WG_WS_PING_INTERVAL` | WebSocket ping/backstop interval (Go duration; sane default). |
-| `WG_WS_MASK` | `1`/`true` masks client WebSocket frames (default off, unmasked — matches a default wstunnel server). When on, the peer wstunnel server MUST run `--websocket-mask-frame` (mask modes must match). |
-| `WG_WS_TRUSTED_PROXIES` | Comma-separated CIDRs from which `X-Forwarded-For` is trusted (server behind an HTTP reverse proxy). |
 | `WG_METRICS_LISTEN` | Prometheus `/metrics` listen address. Empty ⇒ metrics OFF. |
+
+The transport is now chosen **per peer** via the UAPI (`transport=udp\|websocket\|wstunnel`), not by
+environment. The former `WG_TRANSPORT`/`WG_WS_*` variables are removed; all WebSocket config (client
+and server) arrives through the control socket. See `docs/CONFIGURATION.md`.
 
 ### UAPI configuration protocol
 
@@ -123,11 +119,13 @@ Keys include the interface `private_key`, `listen_port`, `fwmark`, and per-peer 
 `endpoint`, `allowed_ip`, `persistent_keepalive_interval`, `preshared_key`, plus `remove`/`replace`
 directives. `wg(8)` is the normal front-end.
 
-The WebSocket transport adds these **additive** UAPI keys (accepted only when `WG_TRANSPORT=ws`):
-the device key `ws_listen` (server listen URL) and the per-peer keys `ws_mode` (`standard`|`wstunnel`),
-`wstunnel_target` (real WireGuard `host:port` for `wstunnel` mode), and `ws_bearer` (per-peer client bearer).
-`get=1` round-trips all four; `ws_bearer` is echoed over the trusted local UAPI socket (like
-`private_key`/`preshared_key`) but is never logged. Peer `endpoint` values may be `ws(s)://host:port/path` URLs.
+Each peer carries a **mandatory** `transport=udp|websocket|wstunnel` key. `endpoint=` is always a plain
+`ip:port`; `websocket`/`wstunnel` peers add per-peer `ws_url`, `wstunnel_target`, `ws_bearer`, `ws_mask`,
+`ws_tls_ca`/`ws_tls_cert`/`ws_tls_key`/`ws_tls_insecure`, and `ws_ping_interval`/`ws_backoff_min`/
+`ws_backoff_max`. Device-level server keys are `ws_listen`, `ws_server_tls_cert`/`ws_server_tls_key`,
+`ws_server_bearer`, and `ws_trusted_proxies`. `get=1` round-trips them all; bearers/key material are
+echoed over the trusted local socket but are never logged. Full key reference: `docs/CONFIGURATION.md`.
+The UAPI is a stable contract for this fork's tooling and is no longer stock-`wg(8)`-compatible.
 
 ### Control socket / named pipe
 

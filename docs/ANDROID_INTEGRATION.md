@@ -69,15 +69,16 @@ Key facts:
    connections are **dialed, dropped, and re-dialed** (every network switch = a new socket). The
    one-shot `wgGetSocketV4/V6` model cannot protect sockets that come and go. Each WS socket must be
    `VpnService.protect()`-ed **at dial time**, so the Go bind must **call back into Java per dial**.
-   This is the Android delivery of the same egress-loop prevention that `IP_BOUND_IF`/`SO_MARK`
-   provide on desktop (`docs/WORK_PLAN.md` D11) — but on an unprivileged app, `protect()` is the only
-   sanctioned mechanism, hence a callback rather than `SO_MARK`.
+   This is the Android delivery of the same egress-loop prevention that the socket `fwmark` (`SO_MARK`)
+   provides on Linux/BSD and `wg-quick` routing provides on darwin — but on an unprivileged app,
+   `protect()` is the only sanctioned mechanism, hence a callback rather than `SO_MARK`.
 
-2. **All WS config must travel in the UAPI settings string.** Because Android passes only the
-   `toWgUserspaceString()` blob and no flags/env, the transport selection, `ws_mode`, `wstunnel_target`,
-   `ws_bearer`, and any TLS options must be expressible as **UAPI keys** (the "embedder-supplied on
-   mobile" branch of `docs/WORK_PLAN.md` D17) or as new `wgTurnOn` parameters. On desktop these live
-   at process level; on Android they cannot.
+2. **All WS config travels in the UAPI settings string.** Because Android passes only the
+   `toWgUserspaceString()` blob and no flags/env, the per-peer `transport`, `endpoint` (`ip:port`),
+   `ws_url`, `wstunnel_target`, `ws_bearer`, `ws_mask`, per-peer TLS paths, and the device-level
+   `ws_listen`/`ws_server_*` keys are all expressed as **UAPI keys** (`docs/CONFIGURATION.md`). Since
+   the transport is now per-peer and env-free, this is the ONLY channel — nothing lives at process
+   level anymore.
 
 ---
 
@@ -89,13 +90,13 @@ Everything in this layer already exists in-repo; the symbols below are the contr
 
 - **WS bind constructible programmatically.** Android never runs `main.go`; it calls
   `device.NewDevice(tun, bind, logger)` directly. The WS bind is built the same way via
-  `conn.NewWebSocketBind(opts ...conn.WSOption)`.
+  `conn.NewMultiplexBind(opts ...conn.WSOption)` (UDP + WebSocket in one bind; per-peer transport), or `conn.NewWebSocketBind` for a WS-only bind.
 - **Per-dial protect hook — the one cross-language contract.** The WS client bind accepts a protect
   callback via the `conn.WithWSProtect(func(fd int))` option
   ([conn/ws_config.go](../conn/ws_config.go)) and invokes it inside `net.Dialer.Control` for **every**
-  dialed socket, before use (the per-OS `conn/ws_pinning_{linux,darwin,default}.go`). This is the sole
+  dialed socket, before use (the per-OS `conn/ws_pinning_{mark_unix,darwin,default}.go`). This is the sole
   new cross-language contract Android needs.
-- **WS config via UAPI.** The additive keys (`ws_listen`, URL `endpoint`, `ws_mode`, `wstunnel_target`,
+- **WS config via UAPI.** The per-peer keys (`transport`, `endpoint=ip:port`, `ws_url`, `wstunnel_target`,
   `ws_bearer`) parse from the settings string in [device/uapi.go](../device/uapi.go), the only channel
   Android has.
 - **The WS bind does not implement `conn.PeekLookAtSocketFd`.** With no single persistent socket,
@@ -167,10 +168,10 @@ of pull (Java→Go, once).
 
 | WORK_PLAN placement (desktop) | On Android |
 |---|---|
-| `WG_TRANSPORT` (env/flag) | UAPI device key in the settings string, or a `wgTurnOn` param |
+|  per-peer `transport` UAPI key in the settings string| UAPI device key in the settings string, or a `wgTurnOn` param |
 | TLS material (files/flags) | UAPI keys / `wgTurnOn` params; a mobile **client** usually needs only system roots + `servername` |
 | `ws_ping_interval`, backoff (flags) | UAPI device keys (sane defaults if omitted) |
-| `ws_listen`, `endpoint` URL, `ws_mode`, `wstunnel_target`, `ws_bearer` (UAPI) | unchanged — already UAPI |
+| per-peer `transport`/`endpoint=ip:port`/`ws_url`/`ws_*`, device `ws_listen`/`ws_server_*` (UAPI) | unchanged — already UAPI |
 
 Everything funnels through `config.toWgUserspaceString()` → `wgTurnOn(settings)` → `IpcSet`.
 
