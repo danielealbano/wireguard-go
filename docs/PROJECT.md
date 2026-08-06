@@ -199,8 +199,9 @@ Delivered in this fork (plan `docs/plans/1_websocket_transport_*.md`):
 
 1. **WebSocket transport** — a `conn.Bind`-level transport tunnelling the WireGuard wire protocol over
    `ws(s)://` in both **server** and **client** modes, with `standard` and `wstunnel` dialects,
-   reconnect + OS-path-monitor roaming, egress pinning, an optional bearer gate, trusted-proxy `XFF`,
-   and an optional Prometheus metrics listener.
+   reconnect + OS-path-monitor roaming, off-tun egress via socket `fwmark` cooperation (Linux/BSD) +
+   `wg-quick` host-routing (darwin) + per-dial `VpnService.protect` (Android), an optional bearer gate,
+   trusted-proxy `XFF`, and an optional Prometheus metrics listener.
 2. **macOS/Android support** — the client bind builds for the mobile targets; a per-dial
    `VpnService.protect` callback and the exported `BindUpdate` bump are the only cross-language
    contracts (the app/libwg-go layers are external; see `docs/ANDROID_INTEGRATION.md`).
