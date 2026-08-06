@@ -41,7 +41,7 @@ All are per-peer, optional (except as noted), and round-tripped by `get=1`:
 |---|---|
 | `ws_url` | `ws(s)://host:port/path` — TLS scheme + SNI/Host + upgrade path. Required to dial. |
 | `wstunnel_target` | `host:port` of the inner WireGuard endpoint the wstunnel relay forwards to. Required for `transport=wstunnel` (dialing); rejected otherwise. |
-| `ws_bearer` | Bearer token sent to the server (`Authorization: Bearer …`). Echoed by `get=1`, NEVER logged. |
+| `ws_bearer` | Auth token sent to the server: `Authorization: Bearer …` for `transport=websocket`; `Authorization: Basic …` (base64 `user:pass`) for `transport=wstunnel`, for a proxy fronting the relay. Echoed by `get=1`, NEVER logged. |
 | `ws_mask` | `true` to mask client frames (needs a wstunnel server run with `--websocket-mask-frame`). Default unmasked. |
 | `ws_tls_ca` | Path to a PEM CA bundle used to verify the server (wss). |
 | `ws_tls_cert` / `ws_tls_key` | Paths to a client cert/key for mutual TLS (wss). |

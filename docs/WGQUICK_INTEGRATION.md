@@ -28,7 +28,7 @@ UDP transport does per OS; the routing/rule setup is `wg-quick`'s:
   accept, AND **re-marks live sockets in place** — so a mark set by `wg-quick` after the interface is
   up (the normal ordering) takes effect immediately. Same per-OS socket option UDP uses
   (`SO_MARK`/`SO_USER_COOKIE`/`SO_RTABLE`).
-- **darwin / BSD (route-based).** macOS has no fwmark; `wg-quick`'s `set_endpoint_direct_route`
+- **darwin (route-based).** macOS has no fwmark; `wg-quick`'s `set_endpoint_direct_route`
   host-routes the endpoint via the physical gateway. Because `endpoint=` is now a routable `ip:port`,
   this works for WebSocket peers with no `wg-quick` change and no wireguard-go pinning — the old
   darwin `IP_BOUND_IF` pin has been removed (it was redundant and, under full-tunnel, harmful:
