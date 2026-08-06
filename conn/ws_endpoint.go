@@ -64,10 +64,10 @@ func (e *WSEndpoint) SrcToString() string { return "" }
 func (e *WSEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 
 func (e *WSEndpoint) dstAddrPort() netip.AddrPort {
-	if e.wsURL != "" {
+	if e.dialTarget.IsValid() { // client/dialing endpoint (or a plain ParseEndpoint ip:port)
 		return e.dialTarget
 	}
-	return e.dst
+	return e.dst // server (inbound) endpoint
 }
 
 func (e *WSEndpoint) DstIP() netip.Addr { return e.dstAddrPort().Addr() }
