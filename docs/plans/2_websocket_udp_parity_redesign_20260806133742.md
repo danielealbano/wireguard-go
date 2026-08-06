@@ -765,8 +765,8 @@ This overrides nothing in `development_pipeline.md` except to INSERT one explici
   several times. Quality gates still run once at the end (US9).
 - **Post-implementation review / added unit tests.** The Stage 4 review found several plan-named unit
   tests had not been written in the first implementation pass. They were added and now exist:
-  `TestWebSocketBind_SetMark_RemarksLiveConns` and `TestWSDialControl_MarkAndProtectContract`
-  (`conn/ws_mark_internal_test.go`, Task 1.3); `TestBuildDialConfig_MTLS`/`_MTLSBadPath`
+  `TestWebSocketBind_SetMark_RemarksLiveConns`, `TestWSDialControl_NoMark_ProtectsWithoutMarking`, and
+  `TestWSDialControl_WithMark_Graceful` (`conn/ws_mark_internal_test.go`, Task 1.3); `TestBuildDialConfig_MTLS`/`_MTLSBadPath`
   (`conn/ws_dialcfg_internal_test.go`, Task 2.2); `TestMultiplexBind_Send_DispatchByType`,
   `TestMultiplexBind_SetMarkCloseFanout`, `TestWSBind_Send_DispatchByEndpointKind`
   (`conn/ws_multiplex_internal_test.go`, Tasks 3.2/4.2); `TestMultiplexBind_ForwardsPeek`
