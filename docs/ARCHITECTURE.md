@@ -321,8 +321,9 @@ flowchart LR
 
 Key properties: a per-connection write mutex serialises concurrent senders; a never-closed inbound
 queue plus a `done` channel and a joined `WaitGroup` give a race- and leak-free shutdown across
-`BindUpdate` cycles; the client reconnects with DNS re-resolution and bounded per-endpoint backoff,
-with WebSocket ping as a dead-connection backstop; the server rebinds a reconnecting peer via
+`BindUpdate` cycles; the client reconnects to the fixed resolved `endpoint=ip:port` with bounded
+per-endpoint backoff (no DNS re-resolution in the bind — the tooling pre-resolves the endpoint, and
+`ws_url` is used only for TLS SNI / HTTP Host), with WebSocket ping as a dead-connection backstop; the server rebinds a reconnecting peer via
 connection id and gates upgrades with a constant-time bearer check. All client connection settings are
 per-peer (carried on the `WSEndpoint`): per-peer TLS (CA/cert/key/insecure via file paths), mask,
 timings, and dialect. Frame masking (built on `github.com/gobwas/ws`) is **unmasked by default** on the
