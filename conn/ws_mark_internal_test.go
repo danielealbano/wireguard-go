@@ -98,37 +98,55 @@ func TestWebSocketBind_SetMark_RemarksLiveConns(t *testing.T) {
 	}
 }
 
-// TestWSDialControl_MarkAndProtectContract verifies the dial-time contract on a real
-// socket, independent of privilege: the protect callback is invoked IFF the fwmark was
-// applied successfully (dialControl returns nil). Under privilege the mark succeeds and
-// protect runs; unprivileged the mark fails and protect is skipped. Either way the
-// invariant holds and the path never panics.
-func TestWSDialControl_MarkAndProtectContract(t *testing.T) {
+// dialControlRawConn returns the syscall.RawConn of a fresh loopback TCP socket.
+func dialControlRawConn(t *testing.T) syscall.RawConn {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	rc, err := c.(syscall.Conn).SyscallConn()
+	if err != nil {
+		t.Fatalf("SyscallConn: %v", err)
+	}
+	return rc
+}
+
+// TestWSDialControl_NoMark_ProtectsWithoutMarking verifies the unprivileged / no-fwmark
+// path (the Android case): with mark==0 the dial MUST NOT touch SO_MARK, so it never
+// returns EPERM and the protect callback ALWAYS runs — independent of privilege.
+func TestWSDialControl_NoMark_ProtectsWithoutMarking(t *testing.T) {
 	var protectCalls int32
 	b := &WebSocketBind{cfg: wsConfig{protect: func(int) { atomic.AddInt32(&protectCalls, 1) }}}
-	b.mark.Store(0x51820)
+	// mark defaults to 0 (no fwmark configured).
 
 	dc := b.dialControl()
 	if dc == nil {
 		t.Fatal("dialControl returned nil with protect set")
 	}
+	if err := dc("tcp", "127.0.0.1:0", dialControlRawConn(t)); err != nil {
+		t.Errorf("dialControl with no fwmark returned error: %v", err)
+	}
+	if got := atomic.LoadInt32(&protectCalls); got != 1 {
+		t.Errorf("protect called %d times for an unmarked dial, want 1", got)
+	}
+}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	c, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	rc, err := c.(syscall.Conn).SyscallConn()
-	if err != nil {
-		t.Fatalf("SyscallConn: %v", err)
-	}
+// TestWSDialControl_WithMark_Graceful verifies the configured-fwmark path on a real
+// socket: SO_MARK requires CAP_NET_ADMIN, so the dial succeeds (privileged) or returns
+// EPERM (unprivileged) and never panics; protect runs IFF the mark applied.
+func TestWSDialControl_WithMark_Graceful(t *testing.T) {
+	var protectCalls int32
+	b := &WebSocketBind{cfg: wsConfig{protect: func(int) { atomic.AddInt32(&protectCalls, 1) }}}
+	b.mark.Store(0x51820)
 
-	markErr := dc("tcp", ln.Addr().String(), rc)
+	markErr := b.dialControl()("tcp", "127.0.0.1:0", dialControlRawConn(t))
 	if (markErr == nil) != (atomic.LoadInt32(&protectCalls) == 1) {
 		t.Errorf("mark/protect contract violated: markErr=%v protectCalls=%d", markErr, protectCalls)
 	}

@@ -16,10 +16,14 @@ import (
 )
 
 // markRawFd sets the per-OS fwmark socket option (fwmarkIoctl: SO_MARK on
-// linux/android, SO_USER_COOKIE on freebsd, SO_RTABLE on openbsd) on fd.
-// mark==0 clears it, matching StdNetBind.SetMark (mark_unix.go).
+// linux/android, SO_USER_COOKIE on freebsd, SO_RTABLE on openbsd) on fd. It is a
+// no-op when no fwmark is configured (mark==0): the kernel requires
+// CAP_NET_RAW/CAP_NET_ADMIN to set SO_MARK to ANY value, including 0, so an
+// unprivileged dialer that never sets a fwmark (e.g. Android, which pins egress
+// with VpnService.protect instead) must not touch SO_MARK — otherwise the setsockopt
+// returns EPERM, failing the dial and skipping the protect callback.
 func markRawFd(fd uintptr, mark uint32) error {
-	if fwmarkIoctl == 0 {
+	if fwmarkIoctl == 0 || mark == 0 {
 		return nil
 	}
 	return unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, fwmarkIoctl, int(mark))
