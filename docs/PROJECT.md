@@ -51,7 +51,7 @@ dependencies). Re-verify against `proxy.golang.org` before bumping.
 | Transitive (indirect) | `golang.org/x/time`, `github.com/google/btree` | `// indirect` in `go.mod`; pulled in transitively (e.g. via gVisor), not imported directly. The `ratelimiter` package uses stdlib `time` and a hand-rolled token bucket. |
 | Logging | in-repo `device.Logger` | Leveled (`Verbose`/`Error`/`Silent`) printf-style. |
 | Versioning | `version.go` `const Version` | Generated from `git describe` by the Makefile. |
-| Lint | **golangci-lint** `v2.12.2` + `go vet` | ZERO-findings policy per `go.md`. |
+| Lint | **golangci-lint** `v2.14.0` + `go vet` | ZERO-findings policy per `go.md`. |
 | Command surface | **Makefile** | Authoritative — see [Build & Commands](#build--commands). |
 
 There is **no external service dependency**: no database, no broker, no third-party API. All I/O is
