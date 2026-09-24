@@ -33,6 +33,7 @@ func (b *WebSocketBind) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	// listen whenever ws_listen is configured — a device can be a WS server and a WS
 	// client at once (ws_listen ↔ listen_port, ws_url ↔ endpoint).
 	b.conns = make(map[string]*wsClientConn)
+	b.dialing = make(map[string]*wsPendingDial)
 	b.dialBackoff = make(map[string]wsBackoff)
 	if b.cfg.listenURL != "" {
 		if err := b.openServer(inbound, done); err != nil {
@@ -68,13 +69,16 @@ func (b *WebSocketBind) Send(bufs [][]byte, ep Endpoint) error {
 	}
 	// Dispatch by endpoint kind: an inbound (accepted) endpoint carries a connID and
 	// no ws_url, and we reply over its accepted connection; a dialing endpoint carries
-	// a ws_url and we dial (once) to reach it.
+	// a ws_url and we dial (once, in the background) to reach it.
 	if we.wsURL == "" && we.connID != 0 {
 		return b.serverSend(bufs, we)
 	}
-	c, err := b.clientConn(we)
+	c, err := b.clientConn(we, bufs)
 	if err != nil {
 		return err
+	}
+	if c == nil {
+		return nil // queued; written once the endpoint's in-flight dial connects
 	}
 	for _, buf := range bufs {
 		if err := c.wc.writeFrame(ws.OpBinary, buf); err != nil { // writeFrame serialises on wc.writeM
@@ -152,6 +156,7 @@ func (b *WebSocketBind) Close() error {
 	clients := b.conns
 	servers := b.sconns
 	b.conns, b.sconns = nil, nil
+	b.dialing = nil // drops the packets queued behind in-flight dials
 	b.mu.Unlock()
 
 	if srv != nil {
@@ -163,6 +168,7 @@ func (b *WebSocketBind) Close() error {
 	for _, sc := range servers {
 		_ = sc.wc.conn.Close()
 	}
+	b.dialWG.Wait() // in-flight dials return promptly: ctxCancel above cancelled them
 	b.readWG.Wait() // join all read/ping loops
 
 	b.mu.Lock()

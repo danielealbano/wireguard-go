@@ -36,10 +36,11 @@ type WebSocketBind struct {
 	ctxCancel context.CancelFunc
 	readWG    sync.WaitGroup
 
-	// client role: conns + dialBackoff are mutated under b.mu; dialM serialises the
-	// dial path (so two concurrent Sends to a new endpoint dial once).
+	// client role: conns, dialing and dialBackoff are mutated under b.mu. At most one
+	// background dial runs per endpoint key (dialing); dialWG joins them on Close.
 	conns       map[string]*wsClientConn
-	dialM       sync.Mutex
+	dialing     map[string]*wsPendingDial
+	dialWG      sync.WaitGroup
 	dialBackoff map[string]wsBackoff
 
 	// server role
@@ -71,6 +72,25 @@ type wsServerConn struct {
 type wsBackoff struct {
 	until time.Time
 	d     time.Duration
+}
+
+// wsPendingDial holds the packets sent to an endpoint while its dial is in flight;
+// they are written in order once the connection is up. Guarded by WebSocketBind.mu.
+type wsPendingDial struct {
+	queue [][]byte
+}
+
+// enqueue copies bufs (the caller reuses them) into the queue, which keeps at most
+// IdealBatchSize packets: when it is full the oldest is dropped, as the device does
+// with its own staged packets.
+func (pd *wsPendingDial) enqueue(bufs [][]byte) {
+	for _, buf := range bufs {
+		if len(pd.queue) == IdealBatchSize {
+			copy(pd.queue, pd.queue[1:])
+			pd.queue = pd.queue[:len(pd.queue)-1]
+		}
+		pd.queue = append(pd.queue, append([]byte(nil), buf...))
+	}
 }
 
 // WebSocketBinder is type-asserted by the device UAPI handler to build WebSocket

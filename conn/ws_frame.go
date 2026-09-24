@@ -36,6 +36,11 @@ type wsConn struct {
 func (c *wsConn) writeFrame(op ws.OpCode, payload []byte) error {
 	c.writeM.Lock()
 	defer c.writeM.Unlock()
+	return c.writeFrameLocked(op, payload)
+}
+
+// writeFrameLocked is writeFrame for a caller that already holds writeM.
+func (c *wsConn) writeFrameLocked(op ws.OpCode, payload []byte) error {
 	if c.mask {
 		p := append([]byte(nil), payload...)
 		return ws.WriteFrame(c.conn, ws.MaskFrameInPlace(ws.NewFrame(op, true, p)))

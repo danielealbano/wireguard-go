@@ -96,6 +96,11 @@ func TestWSClient_ProtectInvokedOnDial(t *testing.T) {
 	if err := b.Send([][]byte{{1, 2, 3}}, ep); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
+	// Send dials in the background, so wait for the dial to reach the socket.
+	deadline := time.Now().Add(3 * time.Second)
+	for protects.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if protects.Load() < 1 {
 		t.Errorf("protect callback not invoked on dial (got %d)", protects.Load())
 	}
@@ -107,10 +112,21 @@ func TestWSClient_BackoffBounded(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = b.Close() })
-	// Port 1 is refused; the first Send fails and arms the backoff.
+	// Port 1 is refused; the first Send queues the packet and its background dial
+	// fails, which arms the backoff.
 	ep := wsClientEndpoint(t, b, "ws://127.0.0.1:1/x", 0)
-	if err := b.Send([][]byte{{1}}, ep); err == nil {
-		t.Fatal("expected dial error to a refused port")
+	if err := b.Send([][]byte{{1}}, ep); err != nil {
+		t.Fatalf("first Send: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := b.Send([][]byte{{1}}, ep); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the failed dial never armed the backoff")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	// While backing off, a subsequent Send returns quickly with a backoff error
 	// instead of attempting another (up to 15s) dial.
