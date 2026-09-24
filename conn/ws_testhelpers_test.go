@@ -178,6 +178,73 @@ func wsClientEndpoint(t *testing.T, b *conn.WebSocketBind, wsURL string, ping ti
 	return ep
 }
 
+// newWSStalledServer accepts TCP connections but never answers the WebSocket
+// upgrade, so a dial to it stays in flight until it is cancelled. accepted receives
+// one value per accepted connection.
+func newWSStalledServer(t *testing.T) (wsURL string, accepted <-chan struct{}) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	acc := make(chan struct{}, 64)
+	var mu sync.Mutex
+	var conns []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+			select {
+			case acc <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	return "ws://" + ln.Addr().String() + "/x", acc
+}
+
+// newWSDelayedRecorder completes the WebSocket upgrade only after delay, then reports
+// every binary message it receives (masked or not), in arrival order.
+func newWSDelayedRecorder(t *testing.T, delay time.Duration) (wsURL string, got <-chan []byte) {
+	t.Helper()
+	msgs := make(chan []byte, 256)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		c, rw, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			f, err := ws.ReadFrame(rw.Reader)
+			if err != nil {
+				return
+			}
+			if f.Header.Masked {
+				ws.Cipher(f.Payload, f.Header.Mask, 0)
+			}
+			if f.Header.OpCode == ws.OpBinary {
+				msgs <- f.Payload
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/x", msgs
+}
+
 // newWSSilentServer upgrades then drains without ever ponging, so the client ping
 // backstop must time out and reconnect.
 func newWSSilentServer(t *testing.T) string {
