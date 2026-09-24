@@ -319,7 +319,11 @@ flowchart LR
     CDIAL --> CBIND --> CDEV
 ```
 
-Key properties: a per-connection write mutex serialises concurrent senders; a never-closed inbound
+Key properties: `Send` never blocks on the network — an endpoint without a live connection gets at
+most one background dial (TCP, TLS and upgrade bounded together to 15 s), packets sent meanwhile wait in
+a per-endpoint queue of up to `IdealBatchSize` (oldest dropped) and are written in order once connected,
+and `Close` cancels and joins in-flight dials, so `BindUpdate` on a network change never waits for a
+dial; a per-connection write mutex serialises concurrent senders; a never-closed inbound
 queue plus a `done` channel and a joined `WaitGroup` give a race- and leak-free shutdown across
 `BindUpdate` cycles; the client reconnects to the fixed resolved `endpoint=ip:port` with bounded
 per-endpoint backoff (no DNS re-resolution in the bind — the tooling pre-resolves the endpoint, and
